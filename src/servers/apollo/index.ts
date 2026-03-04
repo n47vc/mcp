@@ -23,12 +23,14 @@ async function apolloPost(endpoint: string, body: Record<string, any>): Promise<
   return resp.json();
 }
 
-async function searchPeople(params: { q_keywords: string; person_titles?: string[]; per_page?: number }): Promise<any[]> {
-  const data = await apolloPost('/mixed_people/search', {
-    q_keywords: params.q_keywords,
-    person_titles: params.person_titles,
+async function searchPeople(params: { q_keywords?: string; q_organization_domains?: string[]; person_titles?: string[]; per_page?: number }): Promise<any[]> {
+  const body: Record<string, any> = {
     per_page: params.per_page || 25,
-  });
+  };
+  if (params.q_keywords) body.q_keywords = params.q_keywords;
+  if (params.q_organization_domains) body.q_organization_domains = params.q_organization_domains;
+  if (params.person_titles) body.person_titles = params.person_titles;
+  const data = await apolloPost('/mixed_people/search', body);
   return data.people || [];
 }
 
@@ -212,7 +214,7 @@ export function createApolloServer(context?: MCPUserContext): Server {
         }
         case 'apollo_company_people': {
           const input = CompanyPeopleSchema.parse(args);
-          const people = await searchPeople({ q_keywords: input.domain, person_titles: input.titles, per_page: input.limit });
+          const people = await searchPeople({ q_organization_domains: [input.domain], person_titles: input.titles, per_page: input.limit });
           let filtered = people;
           if (input.seniorities && input.seniorities.length > 0) {
             const senioritySet = new Set(input.seniorities.map((s: string) => s.toLowerCase()));

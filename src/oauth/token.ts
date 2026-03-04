@@ -1,15 +1,19 @@
 import type { MCPAppConfig } from '../types';
 import { verifyAuthCode, verifyRefreshToken, signAccessToken, signRefreshToken, verifyPKCE } from '../auth/jwt';
+import { AuthError, ProviderError } from '../errors';
 
-function parseBody(req: any): Record<string, string> {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string') {
-    const params = new URLSearchParams(req.body);
-    const result: Record<string, string> = {};
-    params.forEach((value, key) => { result[key] = value; });
-    return result;
+/** Parse a jose-style duration string (e.g. '1h', '90d', '5m') to seconds. */
+function durationToSeconds(duration: string): number {
+  const match = duration.match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) return 3600;
+  const n = parseInt(match[1], 10);
+  switch (match[2]) {
+    case 's': return n;
+    case 'm': return n * 60;
+    case 'h': return n * 3600;
+    case 'd': return n * 86400;
+    default: return 3600;
   }
-  return {};
 }
 
 export function createTokenHandler(config: MCPAppConfig) {
@@ -20,7 +24,7 @@ export function createTokenHandler(config: MCPAppConfig) {
     }
 
     res.setHeader('Cache-Control', 'no-store');
-    const body = parseBody(req);
+    const body: Record<string, string> = req.body || {};
     const grantType = body.grant_type;
 
     if (grantType === 'authorization_code') {
@@ -39,6 +43,7 @@ export function createTokenHandler(config: MCPAppConfig) {
 async function handleAuthorizationCode(body: Record<string, string>, config: MCPAppConfig, res: any) {
   const code = body.code;
   const codeVerifier = body.code_verifier;
+  const clientId = body.client_id;
   const redirectUri = body.redirect_uri;
 
   if (!code || !codeVerifier) {
@@ -53,6 +58,13 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
     return res.status(400).json({
       error: 'invalid_grant',
       error_description: 'Invalid or expired authorization code',
+    });
+  }
+
+  if (clientId && clientId !== authCode.client_id) {
+    return res.status(400).json({
+      error: 'invalid_grant',
+      error_description: 'client_id mismatch',
     });
   }
 
@@ -79,7 +91,7 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
       const result = await config.authProvider.refreshAccessToken(providerRefreshToken);
       if (result) providerAccessToken = result.access_token;
     } catch (err) {
-      console.error('[MCP Token] Failed to get provider access token:', err);
+      console.error('[MCP Token] Failed to get provider access token:', new ProviderError(String(err)));
     }
   }
 
@@ -102,7 +114,7 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
   return res.status(200).json({
     access_token: accessToken,
     token_type: 'Bearer',
-    expires_in: 3600,
+    expires_in: durationToSeconds(config.tokenLifetimes?.accessToken || '1h'),
     refresh_token: refreshToken,
     scope: scopes.join(' '),
   });
@@ -132,7 +144,7 @@ async function handleRefreshToken(body: Record<string, string>, config: MCPAppCo
       const result = await config.authProvider.refreshAccessToken(providerRefreshToken);
       if (result) providerAccessToken = result.access_token;
     } catch (err) {
-      console.error('[MCP Token] Failed to refresh provider token:', err);
+      console.error('[MCP Token] Failed to refresh provider token:', new ProviderError(String(err)));
     }
   }
 
@@ -155,7 +167,7 @@ async function handleRefreshToken(body: Record<string, string>, config: MCPAppCo
   return res.status(200).json({
     access_token: accessToken,
     token_type: 'Bearer',
-    expires_in: 3600,
+    expires_in: durationToSeconds(config.tokenLifetimes?.accessToken || '1h'),
     refresh_token: newRefreshToken,
     scope: scopes.join(' '),
   });

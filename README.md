@@ -90,6 +90,7 @@ See each server's README for full tool documentation:
 | `baseUrl` | `string` | No | Override auto-detected base URL |
 | `allowedDomain` | `string` | No | Restrict to emails from this domain (e.g., `'mycompany.com'`) |
 | `onToolCall` | `function` | No | Hook called on every tool invocation for logging/alerting |
+| `tokenLifetimes` | `object` | No | Override token lifetimes (`accessToken`, `refreshToken`, `authCode` — jose duration strings like `'1h'`, `'90d'`, `'5m'`) |
 
 ### `createGoogleAuthProvider(options)`
 
@@ -138,6 +139,10 @@ interface AuthProviderConfig {
 - **JWT-based tokens** — Access tokens (1h) and refresh tokens (90d) are signed JWTs with AES-256-GCM encrypted provider tokens. No database required.
 - **PKCE** — OAuth authorization code flow with Proof Key for Code Exchange.
 - **RFC 8414/9728** — Standard OAuth discovery endpoints for automatic client configuration.
+
+### Known Limitations
+
+- **Auth codes are replayable** — Authorization codes are stateless JWTs, so the same code can be exchanged multiple times within its 5-minute expiry window. RFC 6749 requires single-use auth codes, but enforcing this would require server-side storage. PKCE verification mitigates the risk since only the original client possesses the `code_verifier`.
 
 ## License
 

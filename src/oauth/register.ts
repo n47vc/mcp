@@ -18,6 +18,26 @@ export function createRegisterHandler(config: MCPAppConfig) {
         });
       }
 
+      for (const uri of redirectUris) {
+        if (typeof uri !== 'string') {
+          return res.status(400).json({
+            error: 'invalid_client_metadata',
+            error_description: 'Each redirect_uri must be a string',
+          });
+        }
+        try {
+          const parsed = new URL(uri);
+          if (!['http:', 'https:'].includes(parsed.protocol)) {
+            throw new Error('bad protocol');
+          }
+        } catch {
+          return res.status(400).json({
+            error: 'invalid_client_metadata',
+            error_description: `Invalid redirect_uri: ${uri}`,
+          });
+        }
+      }
+
       const clientId = await signClientId({ redirect_uris: redirectUris, client_name: body.client_name }, config);
       const now = Math.floor(Date.now() / 1000);
 

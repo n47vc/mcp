@@ -1,6 +1,9 @@
 // Core types
 export type { MCPUserContext, MCPServerDefinition, MCPAppConfig, AuthProviderConfig, AuthProviderTokens } from './types';
 
+// Errors
+export { MCPError, AuthError, ProviderError } from './errors';
+
 // Handler
 export { createMCPHandler } from './handler';
 

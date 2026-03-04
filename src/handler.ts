@@ -75,8 +75,8 @@ export function createMCPHandler(
     try {
       await transport.handleRequest(req, res, req.body);
     } finally {
-      await server.close();
-      await transport.close();
+      await server.close().catch(() => {});
+      await transport.close().catch(() => {});
     }
   };
 }

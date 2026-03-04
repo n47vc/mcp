@@ -33,6 +33,15 @@ export interface MCPAppConfig {
   allowedDomain?: string;
   /** Hook called on every tool invocation for logging/alerting */
   onToolCall?: (server: string, tool: string, args: unknown, email?: string) => void;
+  /** Token lifetime overrides */
+  tokenLifetimes?: {
+    /** Access token lifetime (jose duration string, e.g. '1h'). Default: '1h' */
+    accessToken?: string;
+    /** Refresh token lifetime (jose duration string, e.g. '90d'). Default: '90d' */
+    refreshToken?: string;
+    /** Auth code lifetime (jose duration string, e.g. '5m'). Default: '5m' */
+    authCode?: string;
+  };
 }
 
 // Re-export auth provider types

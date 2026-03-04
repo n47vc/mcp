@@ -61,7 +61,7 @@ export function createMCPApp(config: MCPAppConfig) {
     }
 
     // OAuth routes — parse body for POST endpoints (needed when bodyParser is disabled)
-    if (path === 'oauth/register' || path === 'oauth/token') {
+    if (path === 'oauth/register' || path === 'oauth/authorize' || path === 'oauth/token') {
       await ensureBodyParsed(req);
     }
     if (path === 'oauth/register') return registerHandler(req, res);
@@ -69,12 +69,13 @@ export function createMCPApp(config: MCPAppConfig) {
     if (path === 'oauth/callback') return callbackHandler(req, res);
     if (path === 'oauth/token') return tokenHandler(req, res);
 
-    // MCP server routes — parse body for onToolCall hook
+    // MCP server routes — always parse body so transport.handleRequest gets parsedBody
+    // and onToolCall hook can inspect the request
     if (segments.length === 1) {
       const slug = segments[0];
       const mcpHandler = mcpHandlers.get(slug);
       if (mcpHandler) {
-        if (config.onToolCall && req.method === 'POST') {
+        if (req.method === 'POST') {
           await ensureBodyParsed(req);
         }
         return mcpHandler(req, res);
