@@ -1,5 +1,6 @@
 import type { MCPAppConfig } from '../types';
 import { verifyOAuthState, signAuthCode, getBaseUrl } from '../auth/jwt';
+import { AuthError, ProviderError } from '../errors';
 
 export function createCallbackHandler(config: MCPAppConfig) {
   return async function handler(req: any, res: any) {
@@ -12,16 +13,19 @@ export function createCallbackHandler(config: MCPAppConfig) {
     const error = req.query.error as string;
 
     if (error) {
+      res.setHeader('Content-Type', 'text/plain');
       return res.status(400).send(`OAuth error: ${error}`);
     }
 
     if (!code || !stateParam) {
-      return res.status(400).json({ error: 'Missing code or state parameter' });
+      const err = new AuthError('invalid_request', 'Missing code or state parameter');
+      return res.status(err.statusCode).json(err.toJSON());
     }
 
     const oauthState = await verifyOAuthState(stateParam, config);
     if (!oauthState) {
-      return res.status(400).json({ error: 'Invalid or expired state parameter' });
+      const err = new AuthError('invalid_request', 'Invalid or expired state parameter');
+      return res.status(err.statusCode).json(err.toJSON());
     }
 
     const baseUrl = getBaseUrl(config, req);
@@ -45,6 +49,8 @@ export function createCallbackHandler(config: MCPAppConfig) {
         client_id: oauthState.client_id,
         code_challenge: oauthState.code_challenge,
         redirect_uri: oauthState.redirect_uri,
+        scope: oauthState.scope,
+        provider_access_token: tokens.access_token,
         provider_refresh_token: tokens.refresh_token,
       }, config);
 
@@ -53,8 +59,9 @@ export function createCallbackHandler(config: MCPAppConfig) {
       if (oauthState.state) redirectUrl.searchParams.set('state', oauthState.state);
       return res.redirect(302, redirectUrl.toString());
     } catch (err) {
-      console.error('[MCP OAuth Callback] Error:', err);
-      return res.status(500).send('Failed to exchange code with auth provider');
+      const providerErr = new ProviderError(err instanceof Error ? err.message : String(err));
+      console.error('[MCP OAuth Callback]', providerErr);
+      return res.status(providerErr.statusCode).json(providerErr.toJSON());
     }
   };
 }

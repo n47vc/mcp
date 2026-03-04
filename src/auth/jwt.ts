@@ -31,7 +31,7 @@ function decryptToken(ciphertext: string, config: MCPAppConfig): string {
   const encrypted = data.subarray(12, data.length - 16);
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
-  return decipher.update(encrypted) + decipher.final('utf8');
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
 function encryptOptional(value: string | undefined, config: MCPAppConfig): string | undefined {
@@ -126,6 +126,8 @@ interface AuthCodePayload {
   client_id: string;
   code_challenge: string;
   redirect_uri: string;
+  scope?: string;
+  provider_access_token?: string;
   provider_refresh_token?: string;
 }
 
@@ -137,12 +139,14 @@ export async function signAuthCode(payload: AuthCodePayload, config: MCPAppConfi
     client_id: payload.client_id,
     code_challenge: payload.code_challenge,
     redirect_uri: payload.redirect_uri,
+    scope: payload.scope,
+    pat: encryptOptional(payload.provider_access_token, config),
     prt: encryptOptional(payload.provider_refresh_token, config),
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setIssuer(MCP_ISSUER)
-    .setExpirationTime('5m')
+    .setExpirationTime(config.tokenLifetimes?.authCode || '5m')
     .sign(getSigningKey(config));
 }
 
@@ -156,7 +160,9 @@ export async function verifyAuthCode(token: string, config: MCPAppConfig): Promi
       client_id: payload.client_id as string,
       code_challenge: payload.code_challenge as string,
       redirect_uri: payload.redirect_uri as string,
-      provider_refresh_token: decryptOptional(payload.prt as string | undefined, config),
+      scope: payload.scope as string | undefined,
+      provider_access_token: decryptOptional((payload.pat || payload.gat) as string | undefined, config),
+      provider_refresh_token: decryptOptional((payload.prt || payload.grt) as string | undefined, config),
     };
   } catch {
     return null;
@@ -183,7 +189,7 @@ export async function signAccessToken(payload: AccessTokenPayload, config: MCPAp
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setIssuer(MCP_ISSUER)
-    .setExpirationTime('1h')
+    .setExpirationTime(config.tokenLifetimes?.accessToken || '1h')
     .sign(getSigningKey(config));
 }
 
@@ -198,7 +204,7 @@ export async function verifyAccessToken(token: string, config: MCPAppConfig): Pr
       email,
       name: (payload.name as string) || email,
       scopes: (payload.scopes as string[]) || [],
-      provider_access_token: decryptOptional(payload.pat as string | undefined, config),
+      provider_access_token: decryptOptional((payload.pat || payload.gat) as string | undefined, config),
     };
   } catch {
     return null;
@@ -210,6 +216,7 @@ export async function verifyAccessToken(token: string, config: MCPAppConfig): Pr
 interface RefreshTokenPayload {
   email: string;
   name: string;
+  scopes: string[];
   provider_refresh_token?: string;
 }
 
@@ -218,12 +225,13 @@ export async function signRefreshToken(payload: RefreshTokenPayload, config: MCP
     type: 'refresh',
     email: payload.email,
     name: payload.name,
+    scopes: payload.scopes,
     prt: encryptOptional(payload.provider_refresh_token, config),
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setIssuer(MCP_ISSUER)
-    .setExpirationTime('90d')
+    .setExpirationTime(config.tokenLifetimes?.refreshToken || '90d')
     .sign(getSigningKey(config));
 }
 
@@ -237,7 +245,8 @@ export async function verifyRefreshToken(token: string, config: MCPAppConfig): P
     return {
       email,
       name: (payload.name as string) || email,
-      provider_refresh_token: decryptOptional(payload.prt as string | undefined, config),
+      scopes: (payload.scopes as string[]) || [],
+      provider_refresh_token: decryptOptional((payload.prt || payload.grt) as string | undefined, config),
     };
   } catch {
     return null;
@@ -251,10 +260,6 @@ export function verifyPKCE(codeVerifier: string, codeChallenge: string): boolean
   const normalizedHash = hash.replace(/=+$/, '');
   const normalizedChallenge = codeChallenge.replace(/=+$/, '');
   return normalizedHash === normalizedChallenge;
-}
-
-export function generateRandomString(length = 32): string {
-  return randomBytes(length).toString('base64url');
 }
 
 // ---------- Base URL ----------

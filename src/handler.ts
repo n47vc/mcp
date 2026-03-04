@@ -57,14 +57,26 @@ export function createMCPHandler(
       provider_access_token: user.provider_access_token,
     };
 
+    // onToolCall hook: fire before forwarding to server
+    if (config.onToolCall && req.method === 'POST' && req.body) {
+      const body = req.body;
+      if (body.method === 'tools/call' && body.params) {
+        try {
+          config.onToolCall(serverSlug, body.params.name, body.params.arguments, userContext.email);
+        } catch {
+          // Hook errors should not block tool execution
+        }
+      }
+    }
+
     const server = createServer(userContext);
     await server.connect(transport);
 
     try {
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, req.body);
     } finally {
-      await server.close();
-      await transport.close();
+      await server.close().catch(() => {});
+      await transport.close().catch(() => {});
     }
   };
 }

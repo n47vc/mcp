@@ -1,5 +1,5 @@
 import type { MCPAppConfig } from '../types';
-import { signClientId, generateRandomString } from '../auth/jwt';
+import { signClientId } from '../auth/jwt';
 
 export function createRegisterHandler(config: MCPAppConfig) {
   return async function handler(req: any, res: any) {
@@ -18,17 +18,34 @@ export function createRegisterHandler(config: MCPAppConfig) {
         });
       }
 
+      for (const uri of redirectUris) {
+        if (typeof uri !== 'string') {
+          return res.status(400).json({
+            error: 'invalid_client_metadata',
+            error_description: 'Each redirect_uri must be a string',
+          });
+        }
+        try {
+          const parsed = new URL(uri);
+          if (!['http:', 'https:'].includes(parsed.protocol)) {
+            throw new Error('bad protocol');
+          }
+        } catch {
+          return res.status(400).json({
+            error: 'invalid_client_metadata',
+            error_description: `Invalid redirect_uri: ${uri}`,
+          });
+        }
+      }
+
       const clientId = await signClientId({ redirect_uris: redirectUris, client_name: body.client_name }, config);
-      const clientSecret = generateRandomString(48);
       const now = Math.floor(Date.now() / 1000);
 
       return res.status(201).json({
         client_id: clientId,
-        client_secret: clientSecret,
         client_id_issued_at: now,
-        client_secret_expires_at: now + 365 * 24 * 60 * 60,
         redirect_uris: redirectUris,
-        token_endpoint_auth_method: body.token_endpoint_auth_method || 'client_secret_post',
+        token_endpoint_auth_method: 'none',
         grant_types: body.grant_types || ['authorization_code', 'refresh_token'],
         response_types: body.response_types || ['code'],
         client_name: body.client_name,

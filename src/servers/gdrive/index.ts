@@ -6,8 +6,6 @@ import {
 import * as fs from 'fs';
 import { google } from 'googleapis';
 import * as path from 'path';
-import { fromBuffer } from 'pdf2pic';
-import { PDFDocument } from 'pdf-lib';
 import { Readable } from 'stream';
 import { z } from 'zod';
 
@@ -702,6 +700,9 @@ async function readPdfAsImages(
   maxPages: number,
   providerAccessToken?: string
 ): Promise<{ name: string; pageCount: number; pages: PdfPageImage[] }> {
+  const { PDFDocument } = await import('pdf-lib');
+  const { fromBuffer } = await import('pdf2pic');
+
   const { name } = await getFileMimeType(fileId, providerAccessToken);
   const pdfBuffer = await downloadDriveFileAsBuffer(fileId, providerAccessToken);
 

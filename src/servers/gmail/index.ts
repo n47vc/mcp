@@ -94,13 +94,27 @@ interface RawMessageOptions {
   references?: string;
 }
 
+async function batchMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency = 5): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    results.push(...await Promise.all(batch.map(fn)));
+  }
+  return results;
+}
+
+function mimeEncodeSubject(subject: string): string {
+  if (/^[\x20-\x7E]*$/.test(subject)) return subject;
+  return `=?UTF-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`;
+}
+
 function buildRawMessage(options: RawMessageOptions): string {
   const lines: string[] = [];
   if (options.from) lines.push(`From: ${options.from}`);
   lines.push(`To: ${options.to}`);
   if (options.cc) lines.push(`Cc: ${options.cc}`);
   if (options.bcc) lines.push(`Bcc: ${options.bcc}`);
-  lines.push(`Subject: ${options.subject}`);
+  lines.push(`Subject: ${mimeEncodeSubject(options.subject)}`);
   if (options.inReplyTo) lines.push(`In-Reply-To: ${options.inReplyTo}`);
   if (options.references) lines.push(`References: ${options.references}`);
   lines.push('Content-Type: text/plain; charset=utf-8');
@@ -258,11 +272,11 @@ export function createGmailServer(context?: MCPUserContext): Server {
           const gmail = google.gmail({ version: 'v1', auth });
           const listRes = await gmail.users.messages.list({ userId: 'me', q: input.query, labelIds: input.labelIds, maxResults: input.maxResults });
           const messageIds = (listRes.data.messages || []).map(m => m.id!).filter(Boolean);
-          const emails = await Promise.all(messageIds.map(async (id) => {
+          const emails = await batchMap(messageIds, async (id) => {
             const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
             const headers = msg.data.payload?.headers || [];
             return { id: msg.data.id, threadId: msg.data.threadId, from: getHeader(headers, 'From'), to: getHeader(headers, 'To'), cc: getHeader(headers, 'Cc'), subject: getHeader(headers, 'Subject'), date: getHeader(headers, 'Date'), snippet: msg.data.snippet, body: getPlainTextBody(msg.data.payload), labelIds: msg.data.labelIds };
-          }));
+          });
           return { content: [{ type: 'text', text: JSON.stringify({ resultSizeEstimate: listRes.data.resultSizeEstimate, count: emails.length, emails }, null, 2) }] };
         }
         case 'gmail_write_draft': {
