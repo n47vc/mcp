@@ -70,10 +70,11 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
     });
   }
 
-  // Use refresh token to get a fresh access token from provider
-  let providerAccessToken: string | undefined;
+  // Use the provider access token from the auth code if available,
+  // otherwise refresh to get a new one
+  let providerAccessToken = authCode.provider_access_token;
   const providerRefreshToken = authCode.provider_refresh_token;
-  if (providerRefreshToken) {
+  if (!providerAccessToken && providerRefreshToken) {
     try {
       const result = await config.authProvider.refreshAccessToken(providerRefreshToken);
       if (result) providerAccessToken = result.access_token;
@@ -82,16 +83,19 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
     }
   }
 
+  const scopes = authCode.scope ? authCode.scope.split(' ').filter(Boolean) : [];
+
   const accessToken = await signAccessToken({
     email: authCode.email,
     name: authCode.name,
-    scopes: [],
+    scopes,
     provider_access_token: providerAccessToken,
   }, config);
 
   const refreshToken = await signRefreshToken({
     email: authCode.email,
     name: authCode.name,
+    scopes,
     provider_refresh_token: providerRefreshToken,
   }, config);
 
@@ -100,7 +104,7 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
     token_type: 'Bearer',
     expires_in: 3600,
     refresh_token: refreshToken,
-    scope: '',
+    scope: scopes.join(' '),
   });
 }
 
@@ -132,16 +136,19 @@ async function handleRefreshToken(body: Record<string, string>, config: MCPAppCo
     }
   }
 
+  const scopes = refreshPayload.scopes;
+
   const accessToken = await signAccessToken({
     email: refreshPayload.email,
     name: refreshPayload.name,
-    scopes: [],
+    scopes,
     provider_access_token: providerAccessToken,
   }, config);
 
   const newRefreshToken = await signRefreshToken({
     email: refreshPayload.email,
     name: refreshPayload.name,
+    scopes,
     provider_refresh_token: providerRefreshToken,
   }, config);
 
@@ -150,6 +157,6 @@ async function handleRefreshToken(body: Record<string, string>, config: MCPAppCo
     token_type: 'Bearer',
     expires_in: 3600,
     refresh_token: newRefreshToken,
-    scope: '',
+    scope: scopes.join(' '),
   });
 }

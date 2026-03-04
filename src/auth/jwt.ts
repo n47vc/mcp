@@ -126,6 +126,8 @@ interface AuthCodePayload {
   client_id: string;
   code_challenge: string;
   redirect_uri: string;
+  scope?: string;
+  provider_access_token?: string;
   provider_refresh_token?: string;
 }
 
@@ -137,6 +139,8 @@ export async function signAuthCode(payload: AuthCodePayload, config: MCPAppConfi
     client_id: payload.client_id,
     code_challenge: payload.code_challenge,
     redirect_uri: payload.redirect_uri,
+    scope: payload.scope,
+    pat: encryptOptional(payload.provider_access_token, config),
     prt: encryptOptional(payload.provider_refresh_token, config),
   })
     .setProtectedHeader({ alg: 'HS256' })
@@ -156,6 +160,8 @@ export async function verifyAuthCode(token: string, config: MCPAppConfig): Promi
       client_id: payload.client_id as string,
       code_challenge: payload.code_challenge as string,
       redirect_uri: payload.redirect_uri as string,
+      scope: payload.scope as string | undefined,
+      provider_access_token: decryptOptional(payload.pat as string | undefined, config),
       provider_refresh_token: decryptOptional(payload.prt as string | undefined, config),
     };
   } catch {
@@ -210,6 +216,7 @@ export async function verifyAccessToken(token: string, config: MCPAppConfig): Pr
 interface RefreshTokenPayload {
   email: string;
   name: string;
+  scopes: string[];
   provider_refresh_token?: string;
 }
 
@@ -218,6 +225,7 @@ export async function signRefreshToken(payload: RefreshTokenPayload, config: MCP
     type: 'refresh',
     email: payload.email,
     name: payload.name,
+    scopes: payload.scopes,
     prt: encryptOptional(payload.provider_refresh_token, config),
   })
     .setProtectedHeader({ alg: 'HS256' })
@@ -237,6 +245,7 @@ export async function verifyRefreshToken(token: string, config: MCPAppConfig): P
     return {
       email,
       name: (payload.name as string) || email,
+      scopes: (payload.scopes as string[]) || [],
       provider_refresh_token: decryptOptional(payload.prt as string | undefined, config),
     };
   } catch {

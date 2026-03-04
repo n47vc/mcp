@@ -46,6 +46,8 @@ export function createCallbackHandler(config: MCPAppConfig) {
         client_id: oauthState.client_id,
         code_challenge: oauthState.code_challenge,
         redirect_uri: oauthState.redirect_uri,
+        scope: oauthState.scope,
+        provider_access_token: tokens.access_token,
         provider_refresh_token: tokens.refresh_token,
       }, config);
 
