@@ -48,6 +48,20 @@ const SendEmailSchema = z.object({
   bcc: z.string().optional(),
 });
 
+const ListLabelsSchema = z.object({});
+
+const ModifyMessageLabelsSchema = z.object({
+  messageId: z.string().min(1),
+  addLabelIds: z.array(z.string()).optional(),
+  removeLabelIds: z.array(z.string()).optional(),
+});
+
+const ModifyThreadLabelsSchema = z.object({
+  threadId: z.string().min(1),
+  addLabelIds: z.array(z.string()).optional(),
+  removeLabelIds: z.array(z.string()).optional(),
+});
+
 // ---------- Helpers ----------
 
 function getGoogleAuth(providerAccessToken?: string) {
@@ -225,6 +239,40 @@ export function createGmailServer(context?: MCPUserContext): Server {
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
+      {
+        name: 'gmail_list_labels',
+        description: 'List all labels in the mailbox (system labels like INBOX, SENT, STARRED and user-created labels).',
+        inputSchema: { type: 'object' as const, properties: {} },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gmail_modify_message_labels',
+        description: 'Add or remove labels on a single email message. Use gmail_list_labels to find label IDs. Common labels: STARRED, IMPORTANT, UNREAD, INBOX, SPAM, TRASH.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            messageId: { type: 'string' as const, description: 'Message ID to modify' },
+            addLabelIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Label IDs to add' },
+            removeLabelIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Label IDs to remove' },
+          },
+          required: ['messageId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gmail_modify_thread_labels',
+        description: 'Add or remove labels on all messages in a thread. Use gmail_list_labels to find label IDs. Common labels: STARRED, IMPORTANT, UNREAD, INBOX, SPAM, TRASH.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            threadId: { type: 'string' as const, description: 'Thread ID to modify' },
+            addLabelIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Label IDs to add' },
+            removeLabelIds: { type: 'array' as const, items: { type: 'string' as const }, description: 'Label IDs to remove' },
+          },
+          required: ['threadId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
     ],
   }));
 
@@ -312,6 +360,48 @@ export function createGmailServer(context?: MCPUserContext): Server {
           const sent = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
           return { content: [{ type: 'text', text: JSON.stringify({ messageId: sent.data.id, threadId: sent.data.threadId, labelIds: sent.data.labelIds }, null, 2) }] };
         }
+        case 'gmail_list_labels': {
+          ListLabelsSchema.parse(args);
+          const auth = getGoogleAuth(providerAccessToken);
+          const gmail = google.gmail({ version: 'v1', auth });
+          const res = await gmail.users.labels.list({ userId: 'me' });
+          const labels = (res.data.labels || []).map(l => ({ id: l.id, name: l.name, type: l.type }));
+          return { content: [{ type: 'text', text: JSON.stringify({ count: labels.length, labels }, null, 2) }] };
+        }
+        case 'gmail_modify_message_labels': {
+          const input = ModifyMessageLabelsSchema.parse(args);
+          if (!input.addLabelIds?.length && !input.removeLabelIds?.length) {
+            throw new Error('At least one of addLabelIds or removeLabelIds is required');
+          }
+          const auth = getGoogleAuth(providerAccessToken);
+          const gmail = google.gmail({ version: 'v1', auth });
+          const res = await gmail.users.messages.modify({
+            userId: 'me',
+            id: input.messageId,
+            requestBody: {
+              addLabelIds: input.addLabelIds || [],
+              removeLabelIds: input.removeLabelIds || [],
+            },
+          });
+          return { content: [{ type: 'text', text: JSON.stringify({ messageId: res.data.id, threadId: res.data.threadId, labelIds: res.data.labelIds }, null, 2) }] };
+        }
+        case 'gmail_modify_thread_labels': {
+          const input = ModifyThreadLabelsSchema.parse(args);
+          if (!input.addLabelIds?.length && !input.removeLabelIds?.length) {
+            throw new Error('At least one of addLabelIds or removeLabelIds is required');
+          }
+          const auth = getGoogleAuth(providerAccessToken);
+          const gmail = google.gmail({ version: 'v1', auth });
+          const res = await gmail.users.threads.modify({
+            userId: 'me',
+            id: input.threadId,
+            requestBody: {
+              addLabelIds: input.addLabelIds || [],
+              removeLabelIds: input.removeLabelIds || [],
+            },
+          });
+          return { content: [{ type: 'text', text: JSON.stringify({ threadId: res.data.id, messages: (res.data.messages || []).map(m => ({ id: m.id, labelIds: m.labelIds })) }, null, 2) }] };
+        }
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -332,6 +422,7 @@ export const gmail: MCPServerDefinition = {
     scopes: [
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.compose',
+      'https://www.googleapis.com/auth/gmail.modify',
     ],
   },
 };
