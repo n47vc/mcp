@@ -89,7 +89,8 @@ See each server's README for full tool documentation:
 | `servers` | `MCPServerDefinition[]` | Yes | Array of MCP servers to enable |
 | `baseUrl` | `string` | No | Override auto-detected base URL |
 | `allowedDomain` | `string` | No | Restrict to emails from this domain (e.g., `'mycompany.com'`) |
-| `onToolCall` | `function` | No | Hook called on every tool invocation for logging/alerting |
+| `onToolCall` | `function` | No | Hook fired before a tool executes. Return a `CallToolResult` to block execution. |
+| `onToolComplete` | `function` | No | Hook fired after a tool executes. Return a `CallToolResult` to override the response. |
 | `tokenLifetimes` | `object` | No | Override token lifetimes (`accessToken`, `refreshToken`, `authCode` — jose duration strings like `'1h'`, `'90d'`, `'5m'`) |
 
 ### `createGoogleAuthProvider(options)`

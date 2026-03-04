@@ -1,6 +1,6 @@
 {
   "name": "@n47vc/mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deploy MCP servers to Vercel in minutes. Includes Gmail, Google Drive, and Apollo.io servers with pluggable OAuth authentication.",
   "license": "MIT",
   "main": "dist/index.js",
