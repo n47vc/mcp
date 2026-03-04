@@ -12,7 +12,7 @@ function makeConfig(): MCPAppConfig {
         `https://accounts.google.com/o/oauth2/v2/auth?state=${state}&redirect_uri=${callbackUrl}&scope=${scopes.join('+')}`,
       exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
       refreshAccessToken: async () => ({ access_token: '' }),
-      getScopesForServer: () => ['openid', 'email'],
+      getBaseScopes: () => ['openid', 'email'],
     },
     servers: [],
   };
@@ -111,6 +111,55 @@ describe('createAuthorizeHandler', () => {
     }), res);
 
     expect(res.statusCode).toBe(302);
+  });
+
+  it('includes server-defined scopes in auth URL', async () => {
+    const config: MCPAppConfig = {
+      ...makeConfig(),
+      servers: [{
+        slug: 'gmail',
+        name: 'Gmail',
+        createServer: () => ({} as any),
+        auth: { scopes: ['https://www.googleapis.com/auth/gmail.readonly'] },
+      }],
+    };
+    const clientId = await signClientId({ redirect_uris: ['https://app.com/cb'] }, config);
+    const handler = createAuthorizeHandler(config);
+    const res = mockRes();
+    await handler(mockReq('GET', {
+      client_id: clientId,
+      code_challenge: 'my-challenge',
+      redirect_uri: 'https://app.com/cb',
+      server: 'gmail',
+    }), res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.redirectUrl).toContain('gmail.readonly');
+    expect(res.redirectUrl).toContain('openid');
+  });
+
+  it('uses only base scopes when no server slug provided', async () => {
+    const config: MCPAppConfig = {
+      ...makeConfig(),
+      servers: [{
+        slug: 'gmail',
+        name: 'Gmail',
+        createServer: () => ({} as any),
+        auth: { scopes: ['https://www.googleapis.com/auth/gmail.readonly'] },
+      }],
+    };
+    const clientId = await signClientId({ redirect_uris: ['https://app.com/cb'] }, config);
+    const handler = createAuthorizeHandler(config);
+    const res = mockRes();
+    await handler(mockReq('GET', {
+      client_id: clientId,
+      code_challenge: 'my-challenge',
+      redirect_uri: 'https://app.com/cb',
+    }), res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.redirectUrl).not.toContain('gmail.readonly');
+    expect(res.redirectUrl).toContain('openid');
   });
 
   it('works with POST method (body params)', async () => {

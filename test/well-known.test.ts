@@ -12,7 +12,7 @@ function makeConfig(servers: MCPServerDefinition[] = [fakeServer]): MCPAppConfig
       getAuthorizationUrl: () => '',
       exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
       refreshAccessToken: async () => ({ access_token: '' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers,
     baseUrl: 'https://example.com',

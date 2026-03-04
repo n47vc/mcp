@@ -11,7 +11,7 @@ function makeConfig(overrides: Partial<MCPAppConfig> = {}): MCPAppConfig {
       getAuthorizationUrl: () => '',
       exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
       refreshAccessToken: async () => ({ access_token: '' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers: [
       { slug: 'gmail', name: 'Gmail', createServer: () => ({} as Server) },
