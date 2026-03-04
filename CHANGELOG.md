@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+### New Features
+
+- **Tool lifecycle hooks** — `onToolCall` now supports returning a `CallToolResult` to block execution; new `onToolComplete` hook fires after execution and can override the response
+
+### Breaking Changes
+
+- `onToolCall` signature changed: now accepts `Promise<void | CallToolResult>` return type (previously `void` only). Existing fire-and-forget hooks remain compatible.
+
 ## 0.2.0
 
 ### New Features

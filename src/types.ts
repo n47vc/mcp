@@ -1,4 +1,5 @@
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthProviderConfig } from './auth/providers';
 
 export interface MCPUserContext {
@@ -31,8 +32,22 @@ export interface MCPAppConfig {
   baseUrl?: string;
   /** Restrict to emails from this domain (e.g., 'mycompany.com') */
   allowedDomain?: string;
-  /** Hook called on every tool invocation for logging/alerting */
-  onToolCall?: (server: string, tool: string, args: unknown, email?: string) => void;
+  /** Hook fired before a tool executes. Return a CallToolResult to block execution and use that as the response. */
+  onToolCall?: (
+    server: string,
+    tool: string,
+    args: unknown,
+    email?: string,
+  ) => void | CallToolResult | Promise<void | CallToolResult>;
+  /** Hook fired after a tool executes. Return a CallToolResult to override the response. */
+  onToolComplete?: (
+    server: string,
+    tool: string,
+    args: unknown,
+    result: CallToolResult | undefined,
+    error: unknown,
+    email?: string,
+  ) => void | CallToolResult | Promise<void | CallToolResult>;
   /** Token lifetime overrides */
   tokenLifetimes?: {
     /** Access token lifetime (jose duration string, e.g. '1h'). Default: '1h' */

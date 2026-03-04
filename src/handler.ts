@@ -57,19 +57,41 @@ export function createMCPHandler(
       provider_access_token: user.provider_access_token,
     };
 
-    // onToolCall hook: fire before forwarding to server
-    if (config.onToolCall && req.method === 'POST' && req.body) {
-      const body = req.body;
-      if (body.method === 'tools/call' && body.params) {
-        try {
-          config.onToolCall(serverSlug, body.params.name, body.params.arguments, userContext.email);
-        } catch {
-          // Hook errors should not block tool execution
+    const server = createServer(userContext);
+
+    // Wrap the tools/call handler with lifecycle hooks
+    const handlers = (server as any)._requestHandlers as Map<string, Function> | undefined;
+    const original = handlers?.get('tools/call');
+    if (original && (config.onToolCall || config.onToolComplete)) {
+      handlers!.set('tools/call', async (request: any, extra: any) => {
+        const toolName = request.params?.name;
+        const toolArgs = request.params?.arguments;
+
+        // Pre-execution hook — can block by returning a result
+        if (config.onToolCall) {
+          const blocked = await config.onToolCall(serverSlug, toolName, toolArgs, userContext.email);
+          if (blocked) return blocked;
         }
-      }
+
+        let result: any;
+        let error: unknown;
+        try {
+          result = await original(request, extra);
+        } catch (err) {
+          error = err;
+        }
+
+        // Post-execution hook — can override by returning a result
+        if (config.onToolComplete) {
+          const override = await config.onToolComplete(serverSlug, toolName, toolArgs, result, error, userContext.email);
+          if (override) return override;
+        }
+
+        if (error) throw error;
+        return result;
+      });
     }
 
-    const server = createServer(userContext);
     await server.connect(transport);
 
     try {
