@@ -31,7 +31,7 @@ function decryptToken(ciphertext: string, config: MCPAppConfig): string {
   const encrypted = data.subarray(12, data.length - 16);
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
-  return decipher.update(encrypted) + decipher.final('utf8');
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
 function encryptOptional(value: string | undefined, config: MCPAppConfig): string | undefined {

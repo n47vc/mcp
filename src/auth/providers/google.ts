@@ -71,8 +71,12 @@ export function createGoogleAuthProvider(options: GoogleAuthProviderOptions): Au
       const email = payload.email as string;
       const name = (payload.name as string) || email;
 
+      if (!email || !payload.email_verified) {
+        throw new Error('Google account email is not verified');
+      }
+
       // Domain validation
-      if (options.allowedDomain && (!email || !email.endsWith(`@${options.allowedDomain}`))) {
+      if (options.allowedDomain && !email.endsWith(`@${options.allowedDomain}`)) {
         throw new Error(`Only @${options.allowedDomain} accounts are allowed`);
       }
 

@@ -73,7 +73,7 @@ export function createMCPHandler(
     await server.connect(transport);
 
     try {
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, req.body);
     } finally {
       await server.close();
       await transport.close();

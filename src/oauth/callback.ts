@@ -12,6 +12,7 @@ export function createCallbackHandler(config: MCPAppConfig) {
     const error = req.query.error as string;
 
     if (error) {
+      res.setHeader('Content-Type', 'text/plain');
       return res.status(400).send(`OAuth error: ${error}`);
     }
 
