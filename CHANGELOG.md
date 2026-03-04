@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+### New Features
+
+- **Gmail label tools** — `gmail_list_labels`, `gmail_modify_message_labels`, `gmail_modify_thread_labels` for managing labels on emails and threads
+- **Scopes from server definitions** — OAuth scopes are now read from `MCPServerDefinition.auth.scopes` automatically; removed `serverScopes` config from `createGoogleAuthProvider`
+
+### Breaking Changes
+
+- `AuthProviderConfig.getScopesForServer()` replaced with `getBaseScopes()` — custom auth providers must update their implementation
+- `serverScopes` option removed from `createGoogleAuthProvider` (scopes now come from server definitions)
+
+### Other
+
+- Added `gmail.modify` scope to Gmail server for label management
+
 ## 0.1.0
 
 Initial release.
