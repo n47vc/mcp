@@ -64,7 +64,10 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
   }
 
   if (!verifyPKCE(codeVerifier, authCode.code_challenge)) {
-    console.warn('[MCP Token] PKCE verification failed (proceeding anyway)');
+    return res.status(400).json({
+      error: 'invalid_grant',
+      error_description: 'PKCE verification failed',
+    });
   }
 
   // Use refresh token to get a fresh access token from provider
