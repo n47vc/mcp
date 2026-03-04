@@ -19,7 +19,7 @@ function makeConfig(overrides: Partial<MCPAppConfig> = {}): MCPAppConfig {
       getAuthorizationUrl: () => 'https://example.com/auth',
       exchangeCode: async () => ({ email: 'test@example.com', name: 'Test', access_token: 'at', refresh_token: 'rt' }),
       refreshAccessToken: async () => ({ access_token: 'new-at' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers: [],
     ...overrides,

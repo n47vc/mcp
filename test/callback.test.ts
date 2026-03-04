@@ -16,7 +16,7 @@ function makeConfig(overrides: Partial<MCPAppConfig> = {}): MCPAppConfig {
         refresh_token: 'provider-rt',
       }),
       refreshAccessToken: async () => ({ access_token: '' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers: [],
     ...overrides,
@@ -127,7 +127,7 @@ describe('createCallbackHandler', () => {
         getAuthorizationUrl: () => '',
         exchangeCode: async () => { throw new Error('Google API error'); },
         refreshAccessToken: async () => ({ access_token: '' }),
-        getScopesForServer: () => [],
+        getBaseScopes: () => [],
       },
     });
 

@@ -4,18 +4,7 @@ Search, read, and manage files in Google Drive. Supports Docs, Sheets, Slides, P
 
 ## Setup
 
-Requires Google OAuth with Drive scopes. Add to your `createGoogleAuthProvider` config:
-
-```typescript
-serverScopes: {
-  gdrive: [
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/documents',
-    'https://www.googleapis.com/auth/spreadsheets.readonly',
-    'https://www.googleapis.com/auth/presentations.readonly',
-  ],
-}
-```
+Requires Google OAuth with Drive scopes. These scopes are declared automatically by the server definition — just include `gdrive` in your `servers` array.
 
 Enable these APIs in your Google Cloud Console project:
 - Google Drive API

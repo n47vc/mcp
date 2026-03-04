@@ -99,9 +99,8 @@ See each server's README for full tool documentation:
 | `clientId` | `string` | Yes | Google OAuth client ID |
 | `clientSecret` | `string` | Yes | Google OAuth client secret |
 | `allowedDomain` | `string` | No | Restrict Google login to this domain |
-| `serverScopes` | `Record<string, string[]>` | No | Additional OAuth scopes per server slug |
 
-All servers authenticate users via Google OAuth (openid + email + profile). Servers that need Google API access (Gmail, Drive) request additional scopes configured via `serverScopes`.
+All servers authenticate users via Google OAuth (openid + email + profile). Servers that need additional API scopes (e.g., Gmail, Drive) declare them in their `MCPServerDefinition.auth.scopes` — no separate scope configuration is needed.
 
 ## Google Cloud Console Setup
 
@@ -129,7 +128,7 @@ interface AuthProviderConfig {
   getAuthorizationUrl(callbackUrl: string, state: string, scopes: string[]): string;
   exchangeCode(code: string, callbackUrl: string): Promise<AuthProviderTokens>;
   refreshAccessToken(refreshToken: string): Promise<{ access_token: string } | undefined>;
-  getScopesForServer(serverSlug?: string): string[];
+  getBaseScopes(): string[];
 }
 ```
 

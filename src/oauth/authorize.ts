@@ -54,9 +54,11 @@ export function createAuthorizeHandler(config: MCPAppConfig) {
     const baseUrl = getBaseUrl(config, req);
     const callbackUrl = `${baseUrl}/api/mcp/oauth/callback`;
 
-    // Get scopes for the server that triggered auth
+    // Resolve scopes: base identity scopes + server-specific scopes from definition
     const serverSlug = params.server as string | undefined;
-    const scopes = config.authProvider.getScopesForServer(serverSlug);
+    const serverDef = serverSlug ? config.servers.find(s => s.slug === serverSlug) : undefined;
+    const serverScopes = serverDef?.auth?.scopes || [];
+    const scopes = [...config.authProvider.getBaseScopes(), ...serverScopes];
 
     // Redirect to auth provider
     const authUrl = config.authProvider.getAuthorizationUrl(callbackUrl, oauthState, scopes);

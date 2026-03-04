@@ -5,8 +5,6 @@ export interface GoogleAuthProviderOptions {
   clientSecret: string;
   /** Restrict to this email domain (e.g., 'mycompany.com') */
   allowedDomain?: string;
-  /** Additional OAuth scopes per server slug */
-  serverScopes?: Record<string, string[]>;
 }
 
 interface GoogleTokenResponse {
@@ -106,11 +104,8 @@ export function createGoogleAuthProvider(options: GoogleAuthProviderOptions): Au
       return { access_token: tokens.access_token };
     },
 
-    getScopesForServer(serverSlug?: string): string[] {
-      const extra = serverSlug && options.serverScopes?.[serverSlug]
-        ? options.serverScopes[serverSlug]
-        : [];
-      return [...BASE_SCOPES, ...extra];
+    getBaseScopes(): string[] {
+      return [...BASE_SCOPES];
     },
   };
 }

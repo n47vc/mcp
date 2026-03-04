@@ -4,16 +4,7 @@ Read, search, and compose emails via Gmail. Part of [@n47vc/mcp](../../README.md
 
 ## Setup
 
-Requires Google OAuth with Gmail scopes. Add to your `createGoogleAuthProvider` config:
-
-```typescript
-serverScopes: {
-  gmail: [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.compose',
-  ],
-}
-```
+Requires Google OAuth with Gmail scopes. These scopes are declared automatically by the server definition — just include `gmail` in your `servers` array.
 
 Enable the **Gmail API** in your Google Cloud Console project.
 

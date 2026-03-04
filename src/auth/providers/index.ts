@@ -41,8 +41,8 @@ export interface AuthProviderConfig {
   ): Promise<{ access_token: string } | undefined>;
 
   /**
-   * Get the scopes needed for a given server slug.
-   * Should always include base identity scopes.
+   * Return base identity scopes (e.g. openid, email, profile).
+   * Server-specific scopes are read from MCPServerDefinition.auth.scopes.
    */
-  getScopesForServer(serverSlug?: string): string[];
+  getBaseScopes(): string[];
 }

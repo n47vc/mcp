@@ -11,7 +11,7 @@ function makeConfig(): MCPAppConfig {
       getAuthorizationUrl: () => '',
       exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
       refreshAccessToken: async () => ({ access_token: '' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers: [],
   };

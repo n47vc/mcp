@@ -12,7 +12,7 @@ function makeConfig(overrides: Partial<MCPAppConfig> = {}): MCPAppConfig {
       getAuthorizationUrl: () => '',
       exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
       refreshAccessToken: async () => ({ access_token: 'refreshed-at' }),
-      getScopesForServer: () => [],
+      getBaseScopes: () => [],
     },
     servers: [],
     ...overrides,
@@ -264,7 +264,7 @@ describe('refresh_token grant', () => {
         getAuthorizationUrl: () => '',
         exchangeCode: async () => ({ email: '', name: '', access_token: '', refresh_token: '' }),
         refreshAccessToken: async () => { throw new Error('Provider down'); },
-        getScopesForServer: () => [],
+        getBaseScopes: () => [],
       },
     });
 
