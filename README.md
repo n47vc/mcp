@@ -1,6 +1,8 @@
 # @n47vc/mcp
 
-Deploy MCP servers to Vercel in minutes. Includes Gmail, Google Drive, and Apollo.io servers with pluggable OAuth authentication.
+Deploy MCP servers to Vercel in minutes. Build your own or use the included Gmail, Google Drive, and Apollo.io servers — all with pluggable OAuth authentication.
+
+**Why this exists:** Building an MCP server from scratch means wiring up OAuth, token management, discovery endpoints, and Vercel deployment yourself. This package handles all of that. You write tool logic, everything else is done.
 
 ## Quick Start
 
@@ -64,6 +66,112 @@ See [app/.env.example](app/.env.example) for all configuration options.
    vercel env add GOOGLE_CLIENT_SECRET
    vercel deploy
    ```
+
+## Build Your Own Server
+
+Creating a custom MCP server is a single file. Here's a complete template:
+
+```typescript
+// src/servers/myapi/index.ts
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import type { MCPUserContext, MCPServerDefinition } from '../../types';
+
+// 1. Define input schemas
+const SearchSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().positive().max(100).optional().default(10),
+});
+
+// 2. Create server factory
+export function createMyApiServer(context?: MCPUserContext): Server {
+  const server = new Server(
+    { name: 'myapi', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
+
+  // 3. List available tools
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: 'myapi_search',
+        description: 'Search my API for results',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            query: { type: 'string' as const, description: 'Search query' },
+            limit: { type: 'number' as const, description: 'Max results', default: 10 },
+          },
+          required: ['query'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+    ],
+  }));
+
+  // 4. Handle tool calls
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    try {
+      switch (name) {
+        case 'myapi_search': {
+          const input = SearchSchema.parse(args);
+          const resp = await fetch(`https://api.example.com/search?q=${encodeURIComponent(input.query)}&limit=${input.limit}`);
+          const data = await resp.json();
+          return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        }
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }, null, 2) }],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
+
+// 5. Export the server definition
+export const myapi: MCPServerDefinition = {
+  slug: 'myapi',
+  name: 'My API MCP Server',
+  createServer: createMyApiServer,
+  auth: { scopes: [] }, // Add OAuth scopes if your API needs them
+};
+```
+
+Then add it to your app:
+
+```typescript
+import { createMCPApp, createGoogleAuthProvider, gmail, myapi } from '@n47vc/mcp';
+
+export default createMCPApp({
+  secret: process.env.MCP_SECRET!,
+  authProvider: createGoogleAuthProvider({
+    clientId: process.env.GOOGLE_CLIENT_ID!,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+  }),
+  servers: [gmail, myapi],
+});
+```
+
+That's it. OAuth, token management, PKCE, and discovery endpoints are all handled for you.
+
+### Claude Code prompt for generating new servers
+
+Copy this prompt into Claude Code to scaffold a new server from any API:
+
+> Build a new MCP server in this project. Look at `src/servers/apollo/index.ts` as a reference implementation — it's the simplest existing server. My new server should:
+>
+> - Live in `src/servers/{name}/index.ts`
+> - Follow the exact same pattern: Zod input schemas, a `create{Name}Server` factory function, tool handlers in a switch statement, and an exported `MCPServerDefinition`
+> - Use `{name}_` as the tool name prefix
+> - Include proper error handling matching the Apollo pattern
+> - The API I want to wrap is: {describe your API, paste docs, or give a URL}
 
 ## Available Servers
 
