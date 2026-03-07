@@ -62,13 +62,13 @@ Compose a draft reply to an existing message (threaded).
 | `cc` | `string` | No | CC recipients |
 | `bcc` | `string` | No | BCC recipients |
 
-### `gmail_send_email`
-Send an email directly (not as draft).
+### `gmail_send_internal_email`
+Send an email directly, restricted to internal recipients only (same domain). All to, cc, and bcc addresses must belong to the internal domain. The internal domain is determined by the `allowedDomain` config, or derived from the authenticated user's email.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `to` | `string` | Yes | Recipient(s) |
+| `to` | `string` | Yes | Recipient(s), must be internal |
 | `subject` | `string` | Yes | Subject line |
 | `body` | `string` | Yes | Plain text body |
-| `cc` | `string` | No | CC recipients |
-| `bcc` | `string` | No | BCC recipients |
+| `cc` | `string` | No | CC recipients, must be internal |
+| `bcc` | `string` | No | BCC recipients, must be internal |
