@@ -55,6 +55,7 @@ export function createMCPHandler(
       email: user.email,
       name: user.name,
       provider_access_token: user.provider_access_token,
+      allowedDomain: config.allowedDomain,
     };
 
     const server = createServer(userContext);

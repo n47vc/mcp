@@ -7,6 +7,8 @@ export interface MCPUserContext {
   name: string;
   /** Provider-specific access token (e.g., Google OAuth token for Gmail/Drive servers) */
   provider_access_token?: string;
+  /** Restrict recipients to this domain (e.g., 'mycompany.com') */
+  allowedDomain?: string;
 }
 
 export interface MCPServerDefinition {

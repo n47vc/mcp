@@ -117,6 +117,39 @@ async function batchMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurren
   return results;
 }
 
+/** Extract the email address from a string like "Name <email>" or plain "email" */
+function extractEmailAddress(raw: string): string {
+  const match = raw.match(/<([^>]+)>/);
+  return (match ? match[1] : raw).trim().toLowerCase();
+}
+
+/** Parse a comma-separated list of recipients into individual email addresses */
+function parseRecipients(field?: string): string[] {
+  if (!field) return [];
+  return field.split(',').map(extractEmailAddress).filter(Boolean);
+}
+
+/** Validate that all recipients belong to the internal domain. Throws if any are external. */
+export function validateInternalRecipients(
+  to: string,
+  cc: string | undefined,
+  bcc: string | undefined,
+  internalDomain: string,
+): void {
+  const allAddresses = [
+    ...parseRecipients(to),
+    ...parseRecipients(cc),
+    ...parseRecipients(bcc),
+  ];
+  const domain = internalDomain.toLowerCase();
+  const external = allAddresses.filter(addr => !addr.endsWith(`@${domain}`));
+  if (external.length > 0) {
+    throw new Error(
+      `Cannot send to external recipients. The following addresses are outside @${domain}: ${external.join(', ')}`,
+    );
+  }
+}
+
 function mimeEncodeSubject(subject: string): string {
   if (/^[\x20-\x7E]*$/.test(subject)) return subject;
   return `=?UTF-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`;
@@ -224,16 +257,16 @@ export function createGmailServer(context?: MCPUserContext): Server {
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       {
-        name: 'gmail_send_email',
-        description: 'Send an email directly (not as draft).',
+        name: 'gmail_send_internal_email',
+        description: 'Send an email directly, restricted to internal recipients only (same domain). All to, cc, and bcc addresses must belong to the internal domain.',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            to: { type: 'string' as const, description: 'Recipient(s)' },
+            to: { type: 'string' as const, description: 'Recipient(s), must be internal' },
             subject: { type: 'string' as const, description: 'Subject line' },
             body: { type: 'string' as const, description: 'Email body (plain text)' },
-            cc: { type: 'string' as const, description: 'CC recipients' },
-            bcc: { type: 'string' as const, description: 'BCC recipients' },
+            cc: { type: 'string' as const, description: 'CC recipients, must be internal' },
+            bcc: { type: 'string' as const, description: 'BCC recipients, must be internal' },
           },
           required: ['to', 'subject', 'body'],
         },
@@ -352,8 +385,13 @@ export function createGmailServer(context?: MCPUserContext): Server {
           const draft = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw, threadId: original.data.threadId! } } });
           return { content: [{ type: 'text', text: JSON.stringify({ draftId: draft.data.id, messageId: draft.data.message?.id, threadId: draft.data.message?.threadId, inReplyTo: origMessageId, replyTo, subject: replySubject }, null, 2) }] };
         }
-        case 'gmail_send_email': {
+        case 'gmail_send_internal_email': {
           const input = SendEmailSchema.parse(args);
+          const internalDomain = context?.allowedDomain ?? context?.email?.split('@')[1];
+          if (!internalDomain) {
+            throw new Error('Cannot determine internal domain. No allowedDomain configured and no user email available.');
+          }
+          validateInternalRecipients(input.to, input.cc, input.bcc, internalDomain);
           const auth = getGoogleAuth(providerAccessToken);
           const gmail = google.gmail({ version: 'v1', auth });
           const raw = buildRawMessage({ to: input.to, subject: input.subject, body: input.body, from: context?.email, cc: input.cc, bcc: input.bcc });
