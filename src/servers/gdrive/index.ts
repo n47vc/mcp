@@ -971,6 +971,7 @@ function extractIdFromUrl(url: string, pattern: RegExp): string {
 
 export function createGDriveServer(context?: MCPUserContext): Server {
   const providerAccessToken = context?.provider_access_token;
+  const contextBaseUrl = context?.baseUrl;
   const server = new Server(
     { name: 'google-drive', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -1660,8 +1661,7 @@ export function createGDriveServer(context?: MCPUserContext): Server {
             .sign(signingKey);
 
           // Determine the base URL for the upload endpoint
-          const baseUrl = process.env.NEXTAUTH_URL
-            || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+          const baseUrl = contextBaseUrl || 'http://localhost:3000';
           const uploadUrl = `${baseUrl}/api/mcp/gdrive-upload`;
 
           return {
