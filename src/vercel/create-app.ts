@@ -5,6 +5,7 @@ import { createAuthorizeHandler } from '../oauth/authorize';
 import { createCallbackHandler } from '../oauth/callback';
 import { createTokenHandler } from '../oauth/token';
 import { createWellKnownHandler } from '../well-known';
+import { createGDriveUploadHandler } from '../gdrive-upload';
 
 /**
  * Read and parse the request body when Next.js bodyParser is disabled.
@@ -48,6 +49,9 @@ export function createMCPApp(config: MCPAppConfig) {
     mcpHandlers.set(server.slug, createMCPHandler(server.slug, server.createServer, config));
   }
 
+  // Google Drive upload endpoint (used by gdrive_upload_file tool)
+  const gdriveUploadHandler = createGDriveUploadHandler(config);
+
   return async function handler(req: any, res: any) {
     // Extract path segments from catch-all route
     const segments: string[] = req.query.mcp || [];
@@ -68,6 +72,11 @@ export function createMCPApp(config: MCPAppConfig) {
     if (path === 'oauth/authorize') return authorizeHandler(req, res);
     if (path === 'oauth/callback') return callbackHandler(req, res);
     if (path === 'oauth/token') return tokenHandler(req, res);
+
+    // Google Drive upload endpoint
+    if (path === 'gdrive-upload') {
+      return gdriveUploadHandler(req, res);
+    }
 
     // MCP server routes — always parse body so transport.handleRequest gets parsedBody
     // and onToolCall hook can inspect the request

@@ -13,6 +13,9 @@ export { createGoogleAuthProvider } from './auth/providers/google';
 // Vercel adapter
 export { createMCPApp } from './vercel';
 
+// Upload endpoint
+export { createGDriveUploadHandler } from './gdrive-upload';
+
 // Servers
 export { gmail, createGmailServer } from './servers/gmail';
 export { gdrive, createGDriveServer } from './servers/gdrive';

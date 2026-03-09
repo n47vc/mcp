@@ -3,13 +3,25 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import * as fs from 'fs';
 import { google } from 'googleapis';
-import * as path from 'path';
 import { Readable } from 'stream';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
+import { SignJWT } from 'jose';
+import { createHash, randomBytes, createCipheriv } from 'crypto';
 
 import type { MCPUserContext, MCPServerDefinition } from '../../types';
+
+// ---------- Upload Encryption Helper ----------
+
+function encryptForUpload(plaintext: string, secret: string): string {
+  const key = createHash('sha256').update(`encrypt:${secret}`).digest();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, encrypted, tag]).toString('base64url');
+}
 
 // ---------- Input Schemas ----------
 
@@ -49,9 +61,9 @@ const ReadImageSchema = z.object({
 });
 
 const UploadFileSchema = z.object({
-  filePath: z.string().min(1),
+  fileName: z.string().min(1),
   folderId: z.string().min(1),
-  fileName: z.string().optional(),
+  mimeType: z.string().optional(),
   convertToGoogleFormat: z.boolean().optional().default(false),
 });
 
@@ -753,47 +765,6 @@ async function readImageFile(
 
 // ---------- Write Operations ----------
 
-async function uploadFile(
-  filePath: string,
-  folderId: string,
-  fileName?: string,
-  convertToGoogleFormat?: boolean,
-  providerAccessToken?: string
-): Promise<{ id: string; name: string; mimeType: string; webViewLink: string }> {
-  const auth = getGoogleAuth(providerAccessToken);
-  const drive = google.drive({ version: 'v3', auth });
-
-  const resolvedName = fileName || path.basename(filePath);
-  const ext = path.extname(resolvedName).toLowerCase();
-  const mimeType = EXTENSION_MIME_TYPES[ext] || 'application/octet-stream';
-
-  const requestBody: any = {
-    name: resolvedName,
-    parents: [folderId],
-  };
-
-  if (convertToGoogleFormat && GOOGLE_CONVERSION_MIME[mimeType]) {
-    requestBody.mimeType = GOOGLE_CONVERSION_MIME[mimeType];
-  }
-
-  const res = await drive.files.create({
-    requestBody,
-    media: {
-      mimeType,
-      body: fs.createReadStream(filePath),
-    },
-    supportsAllDrives: true,
-    fields: 'id, name, mimeType, webViewLink',
-  });
-
-  return {
-    id: res.data.id || '',
-    name: res.data.name || resolvedName,
-    mimeType: res.data.mimeType || mimeType,
-    webViewLink: res.data.webViewLink || '',
-  };
-}
-
 async function appendToGoogleDoc(
   documentId: string,
   content: string,
@@ -1267,24 +1238,24 @@ export function createGDriveServer(context?: MCPUserContext): Server {
       {
         name: 'gdrive_upload_file',
         description:
-          'Upload a local file to a specific Google Drive folder. Supports any file type including .docx, .pdf, .xlsx, .pptx, .csv, .txt, images, etc. ' +
-          'Set convertToGoogleFormat=true to convert Office files to Google native format on upload ' +
-          '(e.g., .docx → Google Doc, .xlsx → Google Sheet, .pptx → Google Slides, .csv → Google Sheet). ' +
-          'Note: Markdown (.md) files are NOT natively convertible by Google Drive — upload as .md or convert to HTML first.',
+          'Upload a file to a Google Drive folder. Returns a short-lived upload URL and a curl command. ' +
+          'The user must run the curl command in their terminal to upload the actual file binary. ' +
+          'Supports any file type including .docx, .pdf, .xlsx, .pptx, .csv, .txt, images, etc. ' +
+          'Set convertToGoogleFormat=true to convert Office files to Google native format on upload.',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            filePath: {
+            fileName: {
               type: 'string' as const,
-              description: 'Absolute path to the local file to upload',
+              description: 'Name for the file in Google Drive (e.g., "report.docx")',
             },
             folderId: {
               type: 'string' as const,
               description: 'Google Drive folder ID to upload the file into',
             },
-            fileName: {
+            mimeType: {
               type: 'string' as const,
-              description: 'Optional: override the file name in Drive (defaults to the local file name)',
+              description: 'Optional MIME type override (auto-detected from file extension if not provided)',
             },
             convertToGoogleFormat: {
               type: 'boolean' as const,
@@ -1292,7 +1263,7 @@ export function createGDriveServer(context?: MCPUserContext): Server {
               default: false,
             },
           },
-          required: ['filePath', 'folderId'],
+          required: ['fileName', 'folderId'],
         },
         annotations: {
           readOnlyHint: false,
@@ -1659,27 +1630,51 @@ export function createGDriveServer(context?: MCPUserContext): Server {
 
         case 'gdrive_upload_file': {
           const input = UploadFileSchema.parse(args);
+          const sid = randomUUID();
 
-          // Verify the file exists before attempting upload
-          if (!fs.existsSync(input.filePath)) {
-            throw new Error(`File not found: ${input.filePath}`);
+          const secret = process.env.NEXTAUTH_SECRET;
+          if (!secret) {
+            throw new Error('NEXTAUTH_SECRET environment variable is required for file uploads');
           }
 
-          const result = await uploadFile(
-            input.filePath,
-            input.folderId,
-            input.fileName,
-            input.convertToGoogleFormat,
-            providerAccessToken
-          );
+          const signingKey = new TextEncoder().encode(secret);
+
+          // Encrypt the Google OAuth token so it's not readable in the JWT
+          const encryptedPat = providerAccessToken
+            ? encryptForUpload(providerAccessToken, secret)
+            : undefined;
+
+          const uploadToken = await new SignJWT({
+            type: 'gdrive_upload',
+            sid,
+            fileName: input.fileName,
+            folderId: input.folderId,
+            mimeType: input.mimeType,
+            convert: input.convertToGoogleFormat,
+            pat: encryptedPat,
+          })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt()
+            .setIssuer('n47-mcp')
+            .setExpirationTime('10m')
+            .sign(signingKey);
+
+          // Determine the base URL for the upload endpoint
+          const baseUrl = process.env.NEXTAUTH_URL
+            || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+          const uploadUrl = `${baseUrl}/api/mcp/gdrive-upload`;
 
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                success: true,
-                ...result,
-                converted: input.convertToGoogleFormat,
+                uploadUrl,
+                token: uploadToken,
+                fileName: input.fileName,
+                folderId: input.folderId,
+                expiresInMinutes: 10,
+                curlCommand: `curl -X POST "${uploadUrl}" -H "Authorization: Bearer ${uploadToken}" -H "Content-Type: application/octet-stream" --data-binary @/path/to/${input.fileName}`,
+                instructions: 'Run the curl command above in your terminal, replacing the file path with the actual path to your file. The token expires in 10 minutes and is single-use.',
               }, null, 2),
             }],
           };
