@@ -9,6 +9,8 @@ export interface MCPUserContext {
   provider_access_token?: string;
   /** Restrict recipients to this domain (e.g., 'mycompany.com') */
   allowedDomain?: string;
+  /** Base URL of the MCP server (e.g., 'https://mcp.example.com') — used for generating upload URLs */
+  baseUrl?: string;
 }
 
 export interface MCPServerDefinition {
