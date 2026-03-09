@@ -972,6 +972,7 @@ function extractIdFromUrl(url: string, pattern: RegExp): string {
 export function createGDriveServer(context?: MCPUserContext): Server {
   const providerAccessToken = context?.provider_access_token;
   const contextBaseUrl = context?.baseUrl;
+  const jwtSecret = context?._secret;
   const server = new Server(
     { name: 'google-drive', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -1633,9 +1634,9 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           const input = UploadFileSchema.parse(args);
           const sid = randomUUID();
 
-          const secret = process.env.NEXTAUTH_SECRET;
+          const secret = jwtSecret;
           if (!secret) {
-            throw new Error('NEXTAUTH_SECRET environment variable is required for file uploads');
+            throw new Error('MCPUserContext._secret is required for file uploads — ensure the server is running via createMCPApp');
           }
 
           const signingKey = new TextEncoder().encode(secret);
