@@ -11,6 +11,8 @@ export interface MCPUserContext {
   allowedDomain?: string;
   /** Base URL of the MCP server (e.g., 'https://mcp.example.com') — used for generating upload URLs */
   baseUrl?: string;
+  /** @internal JWT signing secret — populated by the framework, not user-facing */
+  _secret?: string;
 }
 
 export interface MCPServerDefinition {
