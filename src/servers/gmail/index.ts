@@ -28,6 +28,7 @@ const WriteDraftSchema = z.object({
   to: z.string().min(1),
   subject: z.string().min(1),
   body: z.string().min(1),
+  bodyHtml: z.string().optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
 });
@@ -35,6 +36,7 @@ const WriteDraftSchema = z.object({
 const WriteDraftReplySchema = z.object({
   messageId: z.string().min(1),
   body: z.string().min(1),
+  bodyHtml: z.string().optional(),
   to: z.string().optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
@@ -44,6 +46,7 @@ const SendEmailSchema = z.object({
   to: z.string().min(1),
   subject: z.string().min(1),
   body: z.string().min(1),
+  bodyHtml: z.string().optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
 });
@@ -101,6 +104,7 @@ interface RawMessageOptions {
   to: string;
   subject: string;
   body: string;
+  bodyHtml?: string;
   from?: string;
   cc?: string;
   bcc?: string;
@@ -164,9 +168,27 @@ function buildRawMessage(options: RawMessageOptions): string {
   lines.push(`Subject: ${mimeEncodeSubject(options.subject)}`);
   if (options.inReplyTo) lines.push(`In-Reply-To: ${options.inReplyTo}`);
   if (options.references) lines.push(`References: ${options.references}`);
-  lines.push('Content-Type: text/plain; charset=utf-8');
-  lines.push('');
-  lines.push(options.body);
+  lines.push('MIME-Version: 1.0');
+
+  if (options.bodyHtml) {
+    const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    lines.push('');
+    lines.push(`--${boundary}`);
+    lines.push('Content-Type: text/plain; charset=utf-8');
+    lines.push('');
+    lines.push(options.body);
+    lines.push(`--${boundary}`);
+    lines.push('Content-Type: text/html; charset=utf-8');
+    lines.push('');
+    lines.push(options.bodyHtml);
+    lines.push(`--${boundary}--`);
+  } else {
+    lines.push('Content-Type: text/plain; charset=utf-8');
+    lines.push('');
+    lines.push(options.body);
+  }
+
   const raw = lines.join('\r\n');
   return Buffer.from(raw, 'utf-8').toString('base64url');
 }
@@ -226,13 +248,14 @@ export function createGmailServer(context?: MCPUserContext): Server {
       },
       {
         name: 'gmail_write_draft',
-        description: 'Compose a new email draft (saved to Drafts folder).',
+        description: 'Compose a new email draft (saved to Drafts folder). Supports plain text and optional HTML body.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             to: { type: 'string' as const, description: 'Recipient(s), comma-separated' },
             subject: { type: 'string' as const, description: 'Subject line' },
-            body: { type: 'string' as const, description: 'Email body (plain text)' },
+            body: { type: 'string' as const, description: 'Email body (plain text). Also used as fallback when bodyHtml is provided.' },
+            bodyHtml: { type: 'string' as const, description: 'Optional HTML email body. When provided, the email is sent as multipart/alternative with both plain text and HTML parts.' },
             cc: { type: 'string' as const, description: 'CC recipients' },
             bcc: { type: 'string' as const, description: 'BCC recipients' },
           },
@@ -242,12 +265,13 @@ export function createGmailServer(context?: MCPUserContext): Server {
       },
       {
         name: 'gmail_write_draft_reply',
-        description: 'Compose a draft reply to an existing message (threaded).',
+        description: 'Compose a draft reply to an existing message (threaded). Supports plain text and optional HTML body.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             messageId: { type: 'string' as const, description: 'Message ID to reply to' },
-            body: { type: 'string' as const, description: 'Reply body (plain text)' },
+            body: { type: 'string' as const, description: 'Reply body (plain text). Also used as fallback when bodyHtml is provided.' },
+            bodyHtml: { type: 'string' as const, description: 'Optional HTML reply body. When provided, the email is sent as multipart/alternative with both plain text and HTML parts.' },
             to: { type: 'string' as const, description: 'Override reply-to address' },
             cc: { type: 'string' as const, description: 'CC recipients' },
             bcc: { type: 'string' as const, description: 'BCC recipients' },
@@ -258,13 +282,14 @@ export function createGmailServer(context?: MCPUserContext): Server {
       },
       {
         name: 'gmail_send_internal_email',
-        description: 'Send an email directly, restricted to internal recipients only (same domain). All to, cc, and bcc addresses must belong to the internal domain.',
+        description: 'Send an email directly, restricted to internal recipients only (same domain). All to, cc, and bcc addresses must belong to the internal domain. Supports plain text and optional HTML body.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             to: { type: 'string' as const, description: 'Recipient(s), must be internal' },
             subject: { type: 'string' as const, description: 'Subject line' },
-            body: { type: 'string' as const, description: 'Email body (plain text)' },
+            body: { type: 'string' as const, description: 'Email body (plain text). Also used as fallback when bodyHtml is provided.' },
+            bodyHtml: { type: 'string' as const, description: 'Optional HTML email body. When provided, the email is sent as multipart/alternative with both plain text and HTML parts.' },
             cc: { type: 'string' as const, description: 'CC recipients, must be internal' },
             bcc: { type: 'string' as const, description: 'BCC recipients, must be internal' },
           },
@@ -364,7 +389,7 @@ export function createGmailServer(context?: MCPUserContext): Server {
           const input = WriteDraftSchema.parse(args);
           const auth = getGoogleAuth(providerAccessToken);
           const gmail = google.gmail({ version: 'v1', auth });
-          const raw = buildRawMessage({ to: input.to, subject: input.subject, body: input.body, from: context?.email, cc: input.cc, bcc: input.bcc });
+          const raw = buildRawMessage({ to: input.to, subject: input.subject, body: input.body, bodyHtml: input.bodyHtml, from: context?.email, cc: input.cc, bcc: input.bcc });
           const draft = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw } } });
           return { content: [{ type: 'text', text: JSON.stringify({ draftId: draft.data.id, messageId: draft.data.message?.id, threadId: draft.data.message?.threadId }, null, 2) }] };
         }
@@ -381,7 +406,7 @@ export function createGmailServer(context?: MCPUserContext): Server {
           const replySubject = origSubject.startsWith('Re:') ? origSubject : `Re: ${origSubject}`;
           const references = origReferences ? `${origReferences} ${origMessageId}` : origMessageId;
           const replyTo = input.to || origFrom;
-          const raw = buildRawMessage({ to: replyTo, subject: replySubject, body: input.body, from: context?.email, cc: input.cc, bcc: input.bcc, inReplyTo: origMessageId, references });
+          const raw = buildRawMessage({ to: replyTo, subject: replySubject, body: input.body, bodyHtml: input.bodyHtml, from: context?.email, cc: input.cc, bcc: input.bcc, inReplyTo: origMessageId, references });
           const draft = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw, threadId: original.data.threadId! } } });
           return { content: [{ type: 'text', text: JSON.stringify({ draftId: draft.data.id, messageId: draft.data.message?.id, threadId: draft.data.message?.threadId, inReplyTo: origMessageId, replyTo, subject: replySubject }, null, 2) }] };
         }
@@ -394,7 +419,7 @@ export function createGmailServer(context?: MCPUserContext): Server {
           validateInternalRecipients(input.to, input.cc, input.bcc, internalDomain);
           const auth = getGoogleAuth(providerAccessToken);
           const gmail = google.gmail({ version: 'v1', auth });
-          const raw = buildRawMessage({ to: input.to, subject: input.subject, body: input.body, from: context?.email, cc: input.cc, bcc: input.bcc });
+          const raw = buildRawMessage({ to: input.to, subject: input.subject, body: input.body, bodyHtml: input.bodyHtml, from: context?.email, cc: input.cc, bcc: input.bcc });
           const sent = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
           return { content: [{ type: 'text', text: JSON.stringify({ messageId: sent.data.id, threadId: sent.data.threadId, labelIds: sent.data.labelIds }, null, 2) }] };
         }
