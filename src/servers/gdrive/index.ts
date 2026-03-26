@@ -36,6 +36,11 @@ const SearchDriveSchema = z.object({
 
 const ReadSlidesSchema = z.object({
   presentationId: z.string().min(1),
+  startSlide: z.number().int().positive().optional().default(1),
+  maxSlides: z.number().int().positive().max(100).optional().default(50),
+  format: z.enum(['image', 'text']).optional().default('image'),
+  imageFormat: z.enum(['png', 'jpeg']).optional().default('png'),
+  imageQuality: z.number().int().min(1).max(100).optional().default(80),
 });
 
 const ReadDocSchema = z.object({
@@ -49,7 +54,11 @@ const ReadSheetSchema = z.object({
 
 const ReadPdfSchema = z.object({
   fileId: z.string().min(1),
+  startPage: z.number().int().positive().optional().default(1),
   maxPages: z.number().int().positive().max(100).optional().default(50),
+  format: z.enum(['image', 'text']).optional().default('image'),
+  imageFormat: z.enum(['png', 'jpeg']).optional().default('png'),
+  imageQuality: z.number().int().min(1).max(100).optional().default(80),
 });
 
 const ReadTextSchema = z.object({
@@ -501,6 +510,16 @@ async function listFolder(
   return { entries, totalFiles, truncatedAtDepth: false };
 }
 
+// ---------- Response Size Budget ----------
+
+const MAX_RESPONSE_BYTES = 50 * 1024 * 1024; // 50 MB
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // ---------- Slides: Screenshot each slide ----------
 
 interface SlideImage {
@@ -514,7 +533,12 @@ interface PresentationScreenshots {
   slides: SlideImage[];
 }
 
-async function readSlidesAsImages(presentationId: string, providerAccessToken?: string): Promise<PresentationScreenshots> {
+async function readSlidesAsImages(
+  presentationId: string,
+  options: { startSlide?: number; maxSlides?: number; imageFormat?: 'png' | 'jpeg'; imageQuality?: number },
+  providerAccessToken?: string
+): Promise<PresentationScreenshots & { stoppedAtSlide?: number; totalPayloadBytes: number }> {
+  const sharp = (await import('sharp')).default;
   const auth = getGoogleAuth(providerAccessToken);
   const slides = google.slides({ version: 'v1', auth });
 
@@ -522,9 +546,17 @@ async function readSlidesAsImages(presentationId: string, providerAccessToken?: 
   const title = presentation.data.title || 'Untitled Presentation';
   const pageSlides = presentation.data.slides || [];
 
-  const slideImages: SlideImage[] = [];
+  const startIndex = (options.startSlide || 1) - 1;
+  const maxSlides = options.maxSlides || 50;
+  const endIndex = Math.min(startIndex + maxSlides, pageSlides.length);
+  const useJpeg = options.imageFormat === 'jpeg';
+  const quality = options.imageQuality || 80;
 
-  for (let index = 0; index < pageSlides.length; index++) {
+  const slideImages: SlideImage[] = [];
+  let totalPayloadBytes = 0;
+  let stoppedAtSlide: number | undefined;
+
+  for (let index = startIndex; index < endIndex; index++) {
     const slide = pageSlides[index];
     const pageObjectId = slide.objectId;
     if (!pageObjectId) continue;
@@ -539,10 +571,22 @@ async function readSlidesAsImages(presentationId: string, providerAccessToken?: 
     const contentUrl = thumbnail.data.contentUrl;
     if (!contentUrl) continue;
 
-    // Fetch the image and convert to base64
     const imageResponse = await fetch(contentUrl);
     const arrayBuffer = await imageResponse.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    let imageBuffer: Buffer = Buffer.from(arrayBuffer);
+
+    // Convert to JPEG if requested
+    if (useJpeg) {
+      imageBuffer = await sharp(imageBuffer).jpeg({ quality }).toBuffer();
+    }
+
+    const base64 = imageBuffer.toString('base64');
+    totalPayloadBytes += base64.length;
+
+    if (totalPayloadBytes > MAX_RESPONSE_BYTES) {
+      stoppedAtSlide = index + 1;
+      break;
+    }
 
     slideImages.push({
       slideIndex: index + 1,
@@ -550,7 +594,101 @@ async function readSlidesAsImages(presentationId: string, providerAccessToken?: 
     });
   }
 
-  return { title, slideCount: pageSlides.length, slides: slideImages };
+  return { title, slideCount: pageSlides.length, slides: slideImages, stoppedAtSlide, totalPayloadBytes };
+}
+
+// ---------- Slides: Extract text from each slide ----------
+
+interface SlideTextContent {
+  slideIndex: number;
+  text: string;
+  speakerNotes: string;
+}
+
+function extractTextFromSlideElement(element: any): string {
+  if (!element) return '';
+  const parts: string[] = [];
+
+  if (element.shape?.text?.textElements) {
+    for (const te of element.shape.text.textElements) {
+      if (te.textRun?.content) {
+        parts.push(te.textRun.content);
+      }
+    }
+  }
+
+  if (element.table) {
+    for (const row of element.table.tableRows || []) {
+      const cells: string[] = [];
+      for (const cell of row.tableCells || []) {
+        const cellText = (cell.text?.textElements || [])
+          .map((te: any) => te.textRun?.content || '')
+          .join('')
+          .trim();
+        if (cellText) cells.push(cellText);
+      }
+      if (cells.length > 0) parts.push(cells.join(' | '));
+    }
+  }
+
+  if (element.group?.children) {
+    for (const child of element.group.children) {
+      const childText = extractTextFromSlideElement(child);
+      if (childText) parts.push(childText);
+    }
+  }
+
+  return parts.join('');
+}
+
+async function readSlidesAsText(
+  presentationId: string,
+  options: { startSlide?: number; maxSlides?: number },
+  providerAccessToken?: string
+): Promise<{ title: string; slideCount: number; slides: SlideTextContent[] }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slidesApi = google.slides({ version: 'v1', auth });
+
+  const presentation = await slidesApi.presentations.get({ presentationId });
+  const title = presentation.data.title || 'Untitled Presentation';
+  const pageSlides = presentation.data.slides || [];
+
+  const startIndex = (options.startSlide || 1) - 1;
+  const maxSlides = options.maxSlides || 50;
+  const endIndex = Math.min(startIndex + maxSlides, pageSlides.length);
+
+  const slides: SlideTextContent[] = [];
+
+  for (let index = startIndex; index < endIndex; index++) {
+    const slide = pageSlides[index];
+    const textParts: string[] = [];
+
+    // Extract text from all page elements
+    for (const element of slide.pageElements || []) {
+      const text = extractTextFromSlideElement(element);
+      if (text.trim()) textParts.push(text.trim());
+    }
+
+    // Extract speaker notes
+    let speakerNotes = '';
+    const notesPage = slide.slideProperties?.notesPage;
+    if (notesPage?.pageElements) {
+      for (const element of notesPage.pageElements) {
+        if (element.shape?.placeholder?.type === 'BODY') {
+          const noteText = extractTextFromSlideElement(element);
+          if (noteText.trim()) speakerNotes = noteText.trim();
+        }
+      }
+    }
+
+    slides.push({
+      slideIndex: index + 1,
+      text: textParts.join('\n'),
+      speakerNotes,
+    });
+  }
+
+  return { title, slideCount: pageSlides.length, slides };
 }
 
 // ---------- Docs: Extract text ----------
@@ -709,9 +847,9 @@ interface PdfPageImage {
 
 async function readPdfAsImages(
   fileId: string,
-  maxPages: number,
+  options: { startPage?: number; maxPages?: number; imageFormat?: 'png' | 'jpeg'; imageQuality?: number },
   providerAccessToken?: string
-): Promise<{ name: string; pageCount: number; pages: PdfPageImage[] }> {
+): Promise<{ name: string; pageCount: number; pages: PdfPageImage[]; stoppedAtPage?: number; totalPayloadBytes: number }> {
   const { PDFDocument } = await import('pdf-lib');
   const { fromBuffer } = await import('pdf2pic');
 
@@ -720,9 +858,17 @@ async function readPdfAsImages(
 
   const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
   const pageCount = pdfDoc.getPageCount();
-  const pagesToRender = Math.min(pageCount, maxPages);
+  const startPage = options.startPage || 1;
+  const maxPages = options.maxPages || 50;
+  const endPage = Math.min(startPage + maxPages - 1, pageCount);
+  const useJpeg = options.imageFormat === 'jpeg';
+  const quality = options.imageQuality || 80;
 
   const pages: PdfPageImage[] = [];
+  let totalPayloadBytes = 0;
+  let stoppedAtPage: number | undefined;
+
+  // pdf2pic always renders as PNG; we'll convert to JPEG via sharp if needed
   const convert = fromBuffer(pdfBuffer, {
     density: 200,
     format: 'png',
@@ -731,11 +877,64 @@ async function readPdfAsImages(
     preserveAspectRatio: true,
   });
 
-  for (let i = 1; i <= pagesToRender; i++) {
+  for (let i = startPage; i <= endPage; i++) {
     const result = await convert(i, { responseType: 'base64' });
     if (result.base64) {
-      pages.push({ pageIndex: i, base64: result.base64 });
+      let base64 = result.base64;
+
+      if (useJpeg) {
+        const sharp = (await import('sharp')).default;
+        const pngBuffer = Buffer.from(base64, 'base64');
+        const jpegBuffer = await sharp(pngBuffer).jpeg({ quality }).toBuffer();
+        base64 = jpegBuffer.toString('base64');
+      }
+
+      totalPayloadBytes += base64.length;
+
+      if (totalPayloadBytes > MAX_RESPONSE_BYTES) {
+        stoppedAtPage = i;
+        break;
+      }
+
+      pages.push({ pageIndex: i, base64 });
     }
+  }
+
+  return { name, pageCount, pages, stoppedAtPage, totalPayloadBytes };
+}
+
+async function readPdfAsText(
+  fileId: string,
+  options: { startPage?: number; maxPages?: number },
+  providerAccessToken?: string
+): Promise<{ name: string; pageCount: number; pages: { pageIndex: number; text: string }[] }> {
+  const { PDFDocument } = await import('pdf-lib');
+
+  const { name } = await getFileMimeType(fileId, providerAccessToken);
+  const pdfBuffer = await downloadDriveFileAsBuffer(fileId, providerAccessToken);
+
+  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+  const pageCount = pdfDoc.getPageCount();
+  const startPage = options.startPage || 1;
+  const maxPages = options.maxPages || 50;
+  const endPage = Math.min(startPage + maxPages - 1, pageCount);
+
+  // Use pdf-parse for text extraction (v1 CommonJS module)
+  // @ts-ignore - pdf-parse v1 has no types
+  const pdfParse = (await import('pdf-parse')) as any;
+  const parseFn = pdfParse.default || pdfParse;
+  const parsed = await parseFn(pdfBuffer);
+
+  // pdf-parse returns all text as one block; we split by form feed characters if present
+  const allText = parsed.text || '';
+  const pageTexts = allText.split('\f');
+
+  const pages: { pageIndex: number; text: string }[] = [];
+  for (let i = startPage; i <= endPage; i++) {
+    pages.push({
+      pageIndex: i,
+      text: (pageTexts[i - 1] || '').trim(),
+    });
   }
 
   return { name, pageCount, pages };
@@ -1094,9 +1293,11 @@ export function createGDriveServer(context?: MCPUserContext): Server {
       {
         name: 'gdrive_read_slides',
         description:
-          'Read a Google Slides presentation or uploaded PowerPoint (.pptx/.ppt) or OpenDocument (.odp) file by capturing a screenshot of each slide as an image. ' +
-          'Returns the presentation title and one PNG image per slide. This captures all visual content including ' +
-          'charts, diagrams, images, and text formatting. For non-native formats, a temporary Google Slides copy is created and deleted after reading. ' +
+          'Read a Google Slides presentation or uploaded PowerPoint (.pptx/.ppt) or OpenDocument (.odp) file. ' +
+          'Default mode captures a screenshot of each slide as an image. ' +
+          'Set format="text" to extract text content and speaker notes instead (much smaller payload). ' +
+          'Supports pagination via startSlide/maxSlides. Use imageFormat="jpeg" for smaller image payloads. ' +
+          'For non-native formats, a temporary Google Slides copy is created and deleted after reading. ' +
           'Use gdrive_search first to find presentation IDs, or extract the ID from a Google Slides URL (the string between /d/ and /edit).',
         inputSchema: {
           type: 'object' as const,
@@ -1104,6 +1305,33 @@ export function createGDriveServer(context?: MCPUserContext): Server {
             presentationId: {
               type: 'string' as const,
               description: 'Google Slides presentation ID, uploaded .pptx/.ppt/.odp file ID, or full URL',
+            },
+            startSlide: {
+              type: 'number' as const,
+              description: 'First slide to return (1-indexed, default 1)',
+              default: 1,
+            },
+            maxSlides: {
+              type: 'number' as const,
+              description: 'Maximum number of slides to return (default 50, max 100)',
+              default: 50,
+            },
+            format: {
+              type: 'string' as const,
+              enum: ['image', 'text'],
+              description: 'Output format: "image" (default) for slide screenshots, "text" for extracted text content and speaker notes',
+              default: 'image',
+            },
+            imageFormat: {
+              type: 'string' as const,
+              enum: ['png', 'jpeg'],
+              description: 'Image format when format="image": "png" (default, lossless) or "jpeg" (much smaller files)',
+              default: 'png',
+            },
+            imageQuality: {
+              type: 'number' as const,
+              description: 'JPEG quality 1-100 when imageFormat="jpeg" (default 80)',
+              default: 80,
             },
           },
           required: ['presentationId'],
@@ -1169,8 +1397,10 @@ export function createGDriveServer(context?: MCPUserContext): Server {
       {
         name: 'gdrive_read_pdf',
         description:
-          'Read a PDF file from Google Drive by rendering each page as a PNG image. ' +
-          'Returns the file name, page count, and one image per page. Use gdrive_search first to find the file ID.',
+          'Read a PDF file from Google Drive. Default mode renders each page as an image. ' +
+          'Set format="text" to extract text content instead (much smaller payload). ' +
+          'Supports pagination via startPage/maxPages. Use imageFormat="jpeg" for smaller image payloads. ' +
+          'Use gdrive_search first to find the file ID.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -1178,10 +1408,32 @@ export function createGDriveServer(context?: MCPUserContext): Server {
               type: 'string' as const,
               description: 'Google Drive file ID of the PDF',
             },
+            startPage: {
+              type: 'number' as const,
+              description: 'First page to return (1-indexed, default 1)',
+              default: 1,
+            },
             maxPages: {
               type: 'number' as const,
               description: 'Maximum number of pages to render (default 50, max 100)',
               default: 50,
+            },
+            format: {
+              type: 'string' as const,
+              enum: ['image', 'text'],
+              description: 'Output format: "image" (default) for page screenshots, "text" for extracted text content',
+              default: 'image',
+            },
+            imageFormat: {
+              type: 'string' as const,
+              enum: ['png', 'jpeg'],
+              description: 'Image format when format="image": "png" (default, lossless) or "jpeg" (much smaller files)',
+              default: 'png',
+            },
+            imageQuality: {
+              type: 'number' as const,
+              description: 'JPEG quality 1-100 when imageFormat="jpeg" (default 80)',
+              default: 80,
             },
           },
           required: ['fileId'],
@@ -1476,17 +1728,48 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           }
 
           try {
-            const result = await readSlidesAsImages(fileId, providerAccessToken);
+            if (input.format === 'text') {
+              const result = await readSlidesAsText(fileId, { startSlide: input.startSlide, maxSlides: input.maxSlides }, providerAccessToken);
+
+              const content: any[] = [
+                { type: 'text', text: `Presentation: ${result.title} (${result.slideCount} slides, showing ${result.slides.length} starting from slide ${input.startSlide})${needsConversion ? ' [converted from uploaded file]' : ''}` },
+              ];
+
+              for (const slide of result.slides) {
+                let slideText = `--- Slide ${slide.slideIndex} ---\n${slide.text}`;
+                if (slide.speakerNotes) {
+                  slideText += `\n\n[Speaker Notes]: ${slide.speakerNotes}`;
+                }
+                content.push({ type: 'text', text: slideText });
+              }
+
+              if (result.slides.length < result.slideCount) {
+                const nextStart = input.startSlide + result.slides.length;
+                content.push({ type: 'text', text: `\nTo see more slides, call again with startSlide=${nextStart}` });
+              }
+
+              return { content };
+            }
+
+            const result = await readSlidesAsImages(fileId, { startSlide: input.startSlide, maxSlides: input.maxSlides, imageFormat: input.imageFormat, imageQuality: input.imageQuality }, providerAccessToken);
+            const imageMime = input.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
 
             const content: any[] = [
-              { type: 'text', text: `Presentation: ${result.title} (${result.slideCount} slides)${needsConversion ? ' [converted from uploaded file]' : ''}` },
+              { type: 'text', text: `Presentation: ${result.title} (${result.slideCount} slides, showing ${result.slides.length} starting from slide ${input.startSlide}, payload: ${formatBytes(result.totalPayloadBytes)})${needsConversion ? ' [converted from uploaded file]' : ''}` },
             ];
 
             for (const slide of result.slides) {
               content.push(
                 { type: 'text', text: `--- Slide ${slide.slideIndex} ---` },
-                { type: 'image', data: slide.base64, mimeType: 'image/png' },
+                { type: 'image', data: slide.base64, mimeType: imageMime },
               );
+            }
+
+            if (result.stoppedAtSlide) {
+              content.push({ type: 'text', text: `\nPayload size limit reached at slide ${result.stoppedAtSlide}. To see more slides, call again with startSlide=${result.stoppedAtSlide}` });
+            } else if (result.slides.length > 0 && input.startSlide + result.slides.length - 1 < result.slideCount) {
+              const nextStart = input.startSlide + result.slides.length;
+              content.push({ type: 'text', text: `\nMore slides available. To see them, call again with startSlide=${nextStart}` });
             }
 
             return { content };
@@ -1584,17 +1867,45 @@ export function createGDriveServer(context?: MCPUserContext): Server {
 
         case 'gdrive_read_pdf': {
           const input = ReadPdfSchema.parse(args);
-          const result = await readPdfAsImages(input.fileId, input.maxPages, providerAccessToken);
+
+          if (input.format === 'text') {
+            const result = await readPdfAsText(input.fileId, { startPage: input.startPage, maxPages: input.maxPages }, providerAccessToken);
+
+            const content: any[] = [
+              { type: 'text', text: `PDF: ${result.name} (${result.pageCount} pages, showing ${result.pages.length} starting from page ${input.startPage})` },
+            ];
+
+            for (const page of result.pages) {
+              content.push({ type: 'text', text: `--- Page ${page.pageIndex} ---\n${page.text}` });
+            }
+
+            if (input.startPage + result.pages.length - 1 < result.pageCount) {
+              const nextStart = input.startPage + result.pages.length;
+              content.push({ type: 'text', text: `\nTo see more pages, call again with startPage=${nextStart}` });
+            }
+
+            return { content };
+          }
+
+          const result = await readPdfAsImages(input.fileId, { startPage: input.startPage, maxPages: input.maxPages, imageFormat: input.imageFormat, imageQuality: input.imageQuality }, providerAccessToken);
+          const imageMime = input.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
 
           const content: any[] = [
-            { type: 'text', text: `PDF: ${result.name} (${result.pageCount} pages${result.pageCount > input.maxPages ? `, showing first ${input.maxPages}` : ''})` },
+            { type: 'text', text: `PDF: ${result.name} (${result.pageCount} pages, showing ${result.pages.length} starting from page ${input.startPage}, payload: ${formatBytes(result.totalPayloadBytes)})` },
           ];
 
           for (const page of result.pages) {
             content.push(
               { type: 'text', text: `--- Page ${page.pageIndex} ---` },
-              { type: 'image', data: page.base64, mimeType: 'image/png' },
+              { type: 'image', data: page.base64, mimeType: imageMime },
             );
+          }
+
+          if (result.stoppedAtPage) {
+            content.push({ type: 'text', text: `\nPayload size limit reached at page ${result.stoppedAtPage}. To see more pages, call again with startPage=${result.stoppedAtPage}` });
+          } else if (result.pages.length > 0 && input.startPage + result.pages.length - 1 < result.pageCount) {
+            const nextStart = input.startPage + result.pages.length;
+            content.push({ type: 'text', text: `\nMore pages available. To see them, call again with startPage=${nextStart}` });
           }
 
           return { content };
@@ -1624,7 +1935,7 @@ export function createGDriveServer(context?: MCPUserContext): Server {
 
           return {
             content: [
-              { type: 'text', text: `Image: ${result.name} (${result.mimeType})` },
+              { type: 'text', text: `Image: ${result.name} (${result.mimeType}, payload: ${formatBytes(result.base64.length)})` },
               { type: 'image', data: result.base64, mimeType: imageMime },
             ],
           };
