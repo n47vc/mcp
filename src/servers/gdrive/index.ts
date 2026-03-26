@@ -850,14 +850,13 @@ async function readPdfAsImages(
   options: { startPage?: number; maxPages?: number; imageFormat?: 'png' | 'jpeg'; imageQuality?: number },
   providerAccessToken?: string
 ): Promise<{ name: string; pageCount: number; pages: PdfPageImage[]; stoppedAtPage?: number; totalPayloadBytes: number }> {
-  const { PDFDocument } = await import('pdf-lib');
-  const { fromBuffer } = await import('pdf2pic');
+  const mupdf = await import('mupdf');
 
   const { name } = await getFileMimeType(fileId, providerAccessToken);
   const pdfBuffer = await downloadDriveFileAsBuffer(fileId, providerAccessToken);
 
-  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-  const pageCount = pdfDoc.getPageCount();
+  const doc = mupdf.Document.openDocument(pdfBuffer, 'application/pdf');
+  const pageCount = doc.countPages();
   const startPage = options.startPage || 1;
   const maxPages = options.maxPages || 50;
   const endPage = Math.min(startPage + maxPages - 1, pageCount);
@@ -868,36 +867,34 @@ async function readPdfAsImages(
   let totalPayloadBytes = 0;
   let stoppedAtPage: number | undefined;
 
-  // pdf2pic always renders as PNG; we'll convert to JPEG via sharp if needed
-  const convert = fromBuffer(pdfBuffer, {
-    density: 200,
-    format: 'png',
-    width: 1600,
-    height: 1600,
-    preserveAspectRatio: true,
-  });
+  // Scale factor: 200 DPI / 72 DPI (PDF default) ≈ 2.78
+  const scale = 200 / 72;
 
   for (let i = startPage; i <= endPage; i++) {
-    const result = await convert(i, { responseType: 'base64' });
-    if (result.base64) {
-      let base64 = result.base64;
+    const page = doc.loadPage(i - 1); // mupdf uses 0-based page indices
+    const pixmap = page.toPixmap(
+      mupdf.Matrix.scale(scale, scale),
+      mupdf.ColorSpace.DeviceRGB,
+      false, // no transparency
+      true,  // include annotations
+    );
 
-      if (useJpeg) {
-        const sharp = (await import('sharp')).default;
-        const pngBuffer = Buffer.from(base64, 'base64');
-        const jpegBuffer = await sharp(pngBuffer).jpeg({ quality }).toBuffer();
-        base64 = jpegBuffer.toString('base64');
-      }
+    let imageBuffer: Buffer = Buffer.from(pixmap.asPNG());
 
-      totalPayloadBytes += base64.length;
-
-      if (totalPayloadBytes > MAX_RESPONSE_BYTES) {
-        stoppedAtPage = i;
-        break;
-      }
-
-      pages.push({ pageIndex: i, base64 });
+    if (useJpeg) {
+      const sharp = (await import('sharp')).default;
+      imageBuffer = await sharp(imageBuffer).jpeg({ quality }).toBuffer();
     }
+
+    const base64 = imageBuffer.toString('base64');
+    totalPayloadBytes += base64.length;
+
+    if (totalPayloadBytes > MAX_RESPONSE_BYTES) {
+      stoppedAtPage = i;
+      break;
+    }
+
+    pages.push({ pageIndex: i, base64 });
   }
 
   return { name, pageCount, pages, stoppedAtPage, totalPayloadBytes };
@@ -908,13 +905,13 @@ async function readPdfAsText(
   options: { startPage?: number; maxPages?: number },
   providerAccessToken?: string
 ): Promise<{ name: string; pageCount: number; pages: { pageIndex: number; text: string }[] }> {
-  const { PDFDocument } = await import('pdf-lib');
+  const mupdf = await import('mupdf');
 
   const { name } = await getFileMimeType(fileId, providerAccessToken);
   const pdfBuffer = await downloadDriveFileAsBuffer(fileId, providerAccessToken);
 
-  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-  const pageCount = pdfDoc.getPageCount();
+  const doc = mupdf.Document.openDocument(pdfBuffer, 'application/pdf');
+  const pageCount = doc.countPages();
   const startPage = options.startPage || 1;
   const maxPages = options.maxPages || 50;
   const endPage = Math.min(startPage + maxPages - 1, pageCount);
