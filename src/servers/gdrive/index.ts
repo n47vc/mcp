@@ -117,6 +117,37 @@ const AddSheetSchema = z.object({
   sheetName: z.string().min(1),
 });
 
+const CreateSpreadsheetSchema = z.object({
+  title: z.string().min(1),
+  folderId: z.string().optional(),
+  sheetNames: z.array(z.string().min(1)).optional(),
+});
+
+const UpdateSheetRangeSchema = z.object({
+  fileId: z.string().min(1),
+  range: z.string().min(1),
+  values: z.array(z.array(SheetCellValue)).min(1),
+});
+
+const GetSpreadsheetInfoSchema = z.object({
+  fileId: z.string().min(1),
+});
+
+const ListSheetsSchema = z.object({
+  fileId: z.string().min(1),
+});
+
+const RenameSheetSchema = z.object({
+  fileId: z.string().min(1),
+  sheetName: z.string().min(1),
+  newName: z.string().min(1),
+});
+
+const DeleteSheetSchema = z.object({
+  fileId: z.string().min(1),
+  sheetName: z.string().min(1),
+});
+
 // ---------- Google Auth ----------
 
 function getGoogleAuth(providerAccessToken?: string) {
@@ -874,6 +905,193 @@ async function addSheet(
     sheetName: props?.title ?? sheetName,
     sheetId: props?.sheetId ?? undefined,
   };
+}
+
+async function getSheetIdByName(
+  spreadsheetId: string,
+  sheetName: string,
+  providerAccessToken?: string
+): Promise<number> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets(properties(sheetId,title))',
+  });
+  const match = (meta.data.sheets || []).find(
+    (s: any) => s.properties?.title === sheetName
+  );
+  if (!match || match.properties?.sheetId == null) {
+    throw new Error(`Sheet tab "${sheetName}" not found in spreadsheet ${spreadsheetId}`);
+  }
+  return match.properties.sheetId;
+}
+
+async function createSpreadsheet(
+  title: string,
+  folderId: string | undefined,
+  sheetNames: string[] | undefined,
+  providerAccessToken?: string
+): Promise<{ spreadsheetId: string; title: string; url: string; sheetNames: string[]; folderId?: string }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const drive = google.drive({ version: 'v3', auth });
+
+  const initialSheets = (sheetNames && sheetNames.length > 0 ? sheetNames : ['Sheet1']).map(
+    (name) => ({ properties: { title: name } })
+  );
+
+  const created = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: { title },
+      sheets: initialSheets,
+    },
+    fields: 'spreadsheetId,spreadsheetUrl,properties(title),sheets(properties(title))',
+  });
+
+  const spreadsheetId = created.data.spreadsheetId!;
+  const url = created.data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+  const finalSheetNames = (created.data.sheets || [])
+    .map((s: any) => s.properties?.title)
+    .filter(Boolean) as string[];
+
+  if (folderId) {
+    const file = await drive.files.get({
+      fileId: spreadsheetId,
+      fields: 'parents',
+      supportsAllDrives: true,
+    });
+    const previousParents = (file.data.parents || []).join(',');
+    await drive.files.update({
+      fileId: spreadsheetId,
+      addParents: folderId,
+      removeParents: previousParents || undefined,
+      fields: 'id,parents',
+      supportsAllDrives: true,
+    });
+  }
+
+  return {
+    spreadsheetId,
+    title: created.data.properties?.title || title,
+    url,
+    sheetNames: finalSheetNames,
+    ...(folderId ? { folderId } : {}),
+  };
+}
+
+async function updateSheetRange(
+  fileId: string,
+  range: string,
+  values: SheetCell[][],
+  providerAccessToken?: string
+): Promise<{ fileId: string; updatedRange?: string; updatedRows: number; updatedColumns: number; updatedCells: number }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const res = await sheets.spreadsheets.values.update({
+    spreadsheetId: fileId,
+    range,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values },
+  });
+  return {
+    fileId,
+    updatedRange: res.data.updatedRange ?? undefined,
+    updatedRows: res.data.updatedRows ?? 0,
+    updatedColumns: res.data.updatedColumns ?? 0,
+    updatedCells: res.data.updatedCells ?? 0,
+  };
+}
+
+interface SheetTabInfo {
+  sheetId: number;
+  title: string;
+  index: number;
+  rowCount?: number;
+  columnCount?: number;
+}
+
+async function getSpreadsheetInfo(
+  fileId: string,
+  providerAccessToken?: string
+): Promise<{ fileId: string; title: string; url: string; sheets: SheetTabInfo[] }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: fileId,
+    fields: 'spreadsheetUrl,properties(title),sheets(properties(sheetId,title,index,gridProperties))',
+  });
+  const tabs: SheetTabInfo[] = (meta.data.sheets || []).map((s: any) => ({
+    sheetId: s.properties?.sheetId ?? 0,
+    title: s.properties?.title || '',
+    index: s.properties?.index ?? 0,
+    rowCount: s.properties?.gridProperties?.rowCount ?? undefined,
+    columnCount: s.properties?.gridProperties?.columnCount ?? undefined,
+  }));
+  return {
+    fileId,
+    title: meta.data.properties?.title || 'Untitled Spreadsheet',
+    url: meta.data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${fileId}`,
+    sheets: tabs,
+  };
+}
+
+async function listSheetTabs(
+  fileId: string,
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetNames: string[] }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: fileId,
+    fields: 'sheets(properties(title))',
+  });
+  const names = (meta.data.sheets || [])
+    .map((s: any) => s.properties?.title)
+    .filter(Boolean) as string[];
+  return { fileId, sheetNames: names };
+}
+
+async function renameSheetTab(
+  fileId: string,
+  sheetName: string,
+  newName: string,
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetId: number; previousName: string; newName: string }> {
+  const sheetId = await getSheetIdByName(fileId, sheetName, providerAccessToken);
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: fileId,
+    requestBody: {
+      requests: [
+        {
+          updateSheetProperties: {
+            properties: { sheetId, title: newName },
+            fields: 'title',
+          },
+        },
+      ],
+    },
+  });
+  return { fileId, sheetId, previousName: sheetName, newName };
+}
+
+async function deleteSheetTab(
+  fileId: string,
+  sheetName: string,
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetId: number; deletedName: string }> {
+  const sheetId = await getSheetIdByName(fileId, sheetName, providerAccessToken);
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: fileId,
+    requestBody: {
+      requests: [{ deleteSheet: { sheetId } }],
+    },
+  });
+  return { fileId, sheetId, deletedName: sheetName };
 }
 
 // ---------- Drive File Helpers ----------
@@ -1821,6 +2039,168 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           openWorldHint: true,
         },
       },
+      {
+        name: 'gdrive_create_spreadsheet',
+        description:
+          'Create a new Google Sheets spreadsheet. Optionally place it in a folder and pre-create named tabs. ' +
+          'Returns the new spreadsheet ID and URL.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            title: {
+              type: 'string' as const,
+              description: 'Title of the new spreadsheet',
+            },
+            folderId: {
+              type: 'string' as const,
+              description: 'Optional Drive folder ID to place the spreadsheet in',
+            },
+            sheetNames: {
+              type: 'array' as const,
+              description: 'Optional list of initial tab names. Defaults to a single tab named "Sheet1".',
+              items: { type: 'string' as const },
+            },
+          },
+          required: ['title'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_update_sheet_range',
+        description:
+          'Overwrite a range of cells in a Google Sheets spreadsheet using A1 notation. ' +
+          'Range must include the tab name (e.g. "Sheet1!B2:D5" or "\'My Tab\'!A1:C3"). ' +
+          'Cell values are parsed with USER_ENTERED so dates, numbers, and formulas work.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            range: {
+              type: 'string' as const,
+              description: 'A1 notation range including tab name, e.g. "Sheet1!B2:D5"',
+            },
+            values: {
+              type: 'array' as const,
+              description: 'Array of rows; each row is an array of cell values',
+              items: {
+                type: 'array' as const,
+                items: { type: ['string', 'number', 'boolean', 'null'] as any },
+              },
+            },
+          },
+          required: ['fileId', 'range', 'values'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_get_spreadsheet_info',
+        description:
+          'Get metadata about a Google Sheets spreadsheet: title, URL, and all tabs with their sheetId, index, and grid dimensions.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+          },
+          required: ['fileId'],
+        },
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_list_sheets',
+        description:
+          'List the names of all tabs in a Google Sheets spreadsheet. Lightweight call when only tab names are needed; use gdrive_get_spreadsheet_info for fuller metadata.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+          },
+          required: ['fileId'],
+        },
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_rename_sheet',
+        description:
+          'Rename an existing tab in a Google Sheets spreadsheet. Errors if the tab does not exist.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            sheetName: {
+              type: 'string' as const,
+              description: 'Current name of the tab to rename',
+            },
+            newName: {
+              type: 'string' as const,
+              description: 'New name for the tab',
+            },
+          },
+          required: ['fileId', 'sheetName', 'newName'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_delete_sheet',
+        description:
+          'Delete a tab from a Google Sheets spreadsheet. Errors if the tab does not exist or if it is the only tab in the spreadsheet.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            sheetName: {
+              type: 'string' as const,
+              description: 'Name of the tab to delete',
+            },
+          },
+          required: ['fileId', 'sheetName'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
     ],
   }));
 
@@ -2291,6 +2671,91 @@ export function createGDriveServer(context?: MCPUserContext): Server {
         case 'gdrive_add_sheet': {
           const input = AddSheetSchema.parse(args);
           const result = await addSheet(
+            input.fileId,
+            input.sheetName,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_create_spreadsheet': {
+          const input = CreateSpreadsheetSchema.parse(args);
+          const result = await createSpreadsheet(
+            input.title,
+            input.folderId,
+            input.sheetNames,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_update_sheet_range': {
+          const input = UpdateSheetRangeSchema.parse(args);
+          const result = await updateSheetRange(
+            input.fileId,
+            input.range,
+            input.values,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_get_spreadsheet_info': {
+          const input = GetSpreadsheetInfoSchema.parse(args);
+          const result = await getSpreadsheetInfo(input.fileId, providerAccessToken);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_list_sheets': {
+          const input = ListSheetsSchema.parse(args);
+          const result = await listSheetTabs(input.fileId, providerAccessToken);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_rename_sheet': {
+          const input = RenameSheetSchema.parse(args);
+          const result = await renameSheetTab(
+            input.fileId,
+            input.sheetName,
+            input.newName,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_delete_sheet': {
+          const input = DeleteSheetSchema.parse(args);
+          const result = await deleteSheetTab(
             input.fileId,
             input.sheetName,
             providerAccessToken
