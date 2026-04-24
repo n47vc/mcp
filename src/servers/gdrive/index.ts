@@ -148,6 +148,98 @@ const DeleteSheetSchema = z.object({
   sheetName: z.string().min(1),
 });
 
+const DocRange = z.object({
+  startIndex: z.number().int().nonnegative(),
+  endIndex: z.number().int().positive(),
+});
+
+const HexColor = z.string().regex(/^#?[0-9a-fA-F]{6}$/, 'Expected a 6-digit hex color like "#FF3300"');
+
+const InsertTextInDocSchema = z.object({
+  documentId: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  text: z.string().min(1),
+});
+
+const DeleteRangeInDocSchema = z.object({
+  documentId: z.string().min(1),
+  range: DocRange,
+});
+
+const ApplyDocTextStyleSchema = z.object({
+  documentId: z.string().min(1),
+  range: DocRange,
+  bold: z.boolean().optional(),
+  italic: z.boolean().optional(),
+  underline: z.boolean().optional(),
+  strikethrough: z.boolean().optional(),
+  fontSize: z.number().positive().optional(),
+  foregroundColor: HexColor.optional(),
+  backgroundColor: HexColor.optional(),
+  linkUrl: z.string().url().optional(),
+});
+
+const ApplyDocParagraphStyleSchema = z.object({
+  documentId: z.string().min(1),
+  range: DocRange,
+  alignment: z.enum(['start', 'center', 'end', 'justified']).optional(),
+  namedStyleType: z.enum([
+    'NORMAL_TEXT',
+    'TITLE',
+    'SUBTITLE',
+    'HEADING_1',
+    'HEADING_2',
+    'HEADING_3',
+    'HEADING_4',
+    'HEADING_5',
+    'HEADING_6',
+  ]).optional(),
+  lineSpacing: z.number().positive().optional(),
+  indentStart: z.number().nonnegative().optional(),
+  indentEnd: z.number().nonnegative().optional(),
+});
+
+const CreateDocBulletsSchema = z.object({
+  documentId: z.string().min(1),
+  range: DocRange,
+  listType: z.enum(['bullet', 'numbered', 'checkbox']).optional().default('bullet'),
+});
+
+const FindReplaceInDocSchema = z.object({
+  documentId: z.string().min(1),
+  find: z.string().min(1),
+  replace: z.string(),
+  matchCase: z.boolean().optional().default(false),
+});
+
+const InsertTableInDocSchema = z.object({
+  documentId: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  rows: z.number().int().positive().max(200),
+  columns: z.number().int().positive().max(20),
+});
+
+const InsertImageInDocSchema = z.object({
+  documentId: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  imageUrl: z.string().url(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+});
+
+const CreateFootnoteInDocSchema = z.object({
+  documentId: z.string().min(1),
+  index: z.number().int().nonnegative(),
+});
+
+const GetDocStructureSchema = z.object({
+  documentId: z.string().min(1),
+});
+
+const ListDocTabsSchema = z.object({
+  documentId: z.string().min(1),
+});
+
 // ---------- Google Auth ----------
 
 function getGoogleAuth(providerAccessToken?: string) {
@@ -1297,6 +1389,319 @@ async function appendToGoogleDoc(
   });
 }
 
+// ---------- Docs: Surgical Editing ----------
+
+function parseHexColor(hex: string): { red: number; green: number; blue: number } {
+  const clean = hex.replace(/^#/, '');
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  return { red: r, green: g, blue: b };
+}
+
+interface DocsRange {
+  startIndex: number;
+  endIndex: number;
+}
+
+async function docsBatchUpdate(
+  documentId: string,
+  requests: any[],
+  providerAccessToken?: string
+): Promise<any> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const docs = google.docs({ version: 'v1', auth });
+  const res = await docs.documents.batchUpdate({ documentId, requestBody: { requests } });
+  return res.data;
+}
+
+async function insertTextInDoc(
+  documentId: string,
+  index: number,
+  text: string,
+  providerAccessToken?: string
+): Promise<{ documentId: string; insertedLength: number; index: number }> {
+  await docsBatchUpdate(documentId, [{ insertText: { location: { index }, text } }], providerAccessToken);
+  return { documentId, insertedLength: text.length, index };
+}
+
+async function deleteRangeInDoc(
+  documentId: string,
+  range: DocsRange,
+  providerAccessToken?: string
+): Promise<{ documentId: string; range: DocsRange }> {
+  await docsBatchUpdate(
+    documentId,
+    [{ deleteContentRange: { range } }],
+    providerAccessToken
+  );
+  return { documentId, range };
+}
+
+async function applyDocTextStyle(
+  documentId: string,
+  range: DocsRange,
+  style: {
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    strikethrough?: boolean;
+    fontSize?: number;
+    foregroundColor?: string;
+    backgroundColor?: string;
+    linkUrl?: string;
+  },
+  providerAccessToken?: string
+): Promise<{ documentId: string; range: DocsRange; appliedFields: string[] }> {
+  const textStyle: any = {};
+  const fields: string[] = [];
+  if (style.bold !== undefined) { textStyle.bold = style.bold; fields.push('bold'); }
+  if (style.italic !== undefined) { textStyle.italic = style.italic; fields.push('italic'); }
+  if (style.underline !== undefined) { textStyle.underline = style.underline; fields.push('underline'); }
+  if (style.strikethrough !== undefined) { textStyle.strikethrough = style.strikethrough; fields.push('strikethrough'); }
+  if (style.fontSize !== undefined) {
+    textStyle.fontSize = { magnitude: style.fontSize, unit: 'PT' };
+    fields.push('fontSize');
+  }
+  if (style.foregroundColor !== undefined) {
+    textStyle.foregroundColor = { color: { rgbColor: parseHexColor(style.foregroundColor) } };
+    fields.push('foregroundColor');
+  }
+  if (style.backgroundColor !== undefined) {
+    textStyle.backgroundColor = { color: { rgbColor: parseHexColor(style.backgroundColor) } };
+    fields.push('backgroundColor');
+  }
+  if (style.linkUrl !== undefined) {
+    textStyle.link = { url: style.linkUrl };
+    fields.push('link');
+  }
+  if (fields.length === 0) {
+    throw new Error('No text style fields supplied. Provide at least one of bold/italic/underline/strikethrough/fontSize/foregroundColor/backgroundColor/linkUrl.');
+  }
+  await docsBatchUpdate(
+    documentId,
+    [{ updateTextStyle: { range, textStyle, fields: fields.join(',') } }],
+    providerAccessToken
+  );
+  return { documentId, range, appliedFields: fields };
+}
+
+async function applyDocParagraphStyle(
+  documentId: string,
+  range: DocsRange,
+  opts: {
+    alignment?: 'start' | 'center' | 'end' | 'justified';
+    namedStyleType?: string;
+    lineSpacing?: number;
+    indentStart?: number;
+    indentEnd?: number;
+  },
+  providerAccessToken?: string
+): Promise<{ documentId: string; range: DocsRange; appliedFields: string[] }> {
+  const paragraphStyle: any = {};
+  const fields: string[] = [];
+  if (opts.alignment) {
+    paragraphStyle.alignment = opts.alignment.toUpperCase();
+    fields.push('alignment');
+  }
+  if (opts.namedStyleType) {
+    paragraphStyle.namedStyleType = opts.namedStyleType;
+    fields.push('namedStyleType');
+  }
+  if (opts.lineSpacing !== undefined) {
+    paragraphStyle.lineSpacing = opts.lineSpacing;
+    fields.push('lineSpacing');
+  }
+  if (opts.indentStart !== undefined) {
+    paragraphStyle.indentStart = { magnitude: opts.indentStart, unit: 'PT' };
+    fields.push('indentStart');
+  }
+  if (opts.indentEnd !== undefined) {
+    paragraphStyle.indentEnd = { magnitude: opts.indentEnd, unit: 'PT' };
+    fields.push('indentEnd');
+  }
+  if (fields.length === 0) {
+    throw new Error('No paragraph style fields supplied.');
+  }
+  await docsBatchUpdate(
+    documentId,
+    [{ updateParagraphStyle: { range, paragraphStyle, fields: fields.join(',') } }],
+    providerAccessToken
+  );
+  return { documentId, range, appliedFields: fields };
+}
+
+const BULLET_PRESETS: Record<string, string> = {
+  bullet: 'BULLET_DISC_CIRCLE_SQUARE',
+  numbered: 'NUMBERED_DECIMAL_ALPHA_ROMAN',
+  checkbox: 'BULLET_CHECKBOX',
+};
+
+async function createDocBullets(
+  documentId: string,
+  range: DocsRange,
+  listType: 'bullet' | 'numbered' | 'checkbox',
+  providerAccessToken?: string
+): Promise<{ documentId: string; range: DocsRange; listType: string }> {
+  const bulletPreset = BULLET_PRESETS[listType];
+  await docsBatchUpdate(
+    documentId,
+    [{ createParagraphBullets: { range, bulletPreset } }],
+    providerAccessToken
+  );
+  return { documentId, range, listType };
+}
+
+async function findReplaceInDoc(
+  documentId: string,
+  find: string,
+  replace: string,
+  matchCase: boolean,
+  providerAccessToken?: string
+): Promise<{ documentId: string; occurrencesChanged: number }> {
+  const data = await docsBatchUpdate(
+    documentId,
+    [
+      {
+        replaceAllText: {
+          containsText: { text: find, matchCase },
+          replaceText: replace,
+        },
+      },
+    ],
+    providerAccessToken
+  );
+  const reply = data.replies?.[0]?.replaceAllText;
+  return { documentId, occurrencesChanged: reply?.occurrencesChanged ?? 0 };
+}
+
+async function insertTableInDoc(
+  documentId: string,
+  index: number,
+  rows: number,
+  columns: number,
+  providerAccessToken?: string
+): Promise<{ documentId: string; index: number; rows: number; columns: number }> {
+  await docsBatchUpdate(
+    documentId,
+    [{ insertTable: { rows, columns, location: { index } } }],
+    providerAccessToken
+  );
+  return { documentId, index, rows, columns };
+}
+
+async function insertImageInDoc(
+  documentId: string,
+  index: number,
+  imageUrl: string,
+  width: number | undefined,
+  height: number | undefined,
+  providerAccessToken?: string
+): Promise<{ documentId: string; index: number; imageUrl: string; objectId?: string }> {
+  const req: any = {
+    insertInlineImage: {
+      location: { index },
+      uri: imageUrl,
+    },
+  };
+  if (width !== undefined && height !== undefined) {
+    req.insertInlineImage.objectSize = {
+      width: { magnitude: width, unit: 'PT' },
+      height: { magnitude: height, unit: 'PT' },
+    };
+  }
+  const data = await docsBatchUpdate(documentId, [req], providerAccessToken);
+  const objectId = data.replies?.[0]?.insertInlineImage?.objectId;
+  return { documentId, index, imageUrl, objectId };
+}
+
+async function createFootnoteInDoc(
+  documentId: string,
+  index: number,
+  providerAccessToken?: string
+): Promise<{ documentId: string; index: number; footnoteId?: string }> {
+  const data = await docsBatchUpdate(
+    documentId,
+    [{ createFootnote: { location: { index } } }],
+    providerAccessToken
+  );
+  const footnoteId = data.replies?.[0]?.createFootnote?.footnoteId;
+  return { documentId, index, footnoteId };
+}
+
+interface DocStructureElement {
+  type: string;
+  startIndex?: number;
+  endIndex?: number;
+  text?: string;
+  namedStyleType?: string;
+  rows?: number;
+  columns?: number;
+}
+
+function summarizeDocElement(element: any): DocStructureElement {
+  if (element.paragraph) {
+    const text = (element.paragraph.elements || [])
+      .map((e: any) => e.textRun?.content || '')
+      .join('');
+    return {
+      type: 'paragraph',
+      startIndex: element.startIndex,
+      endIndex: element.endIndex,
+      text,
+      namedStyleType: element.paragraph.paragraphStyle?.namedStyleType,
+    };
+  }
+  if (element.table) {
+    return {
+      type: 'table',
+      startIndex: element.startIndex,
+      endIndex: element.endIndex,
+      rows: element.table.rows,
+      columns: element.table.columns,
+    };
+  }
+  if (element.sectionBreak) {
+    return { type: 'sectionBreak', startIndex: element.startIndex, endIndex: element.endIndex };
+  }
+  if (element.tableOfContents) {
+    return { type: 'tableOfContents', startIndex: element.startIndex, endIndex: element.endIndex };
+  }
+  return { type: 'unknown', startIndex: element.startIndex, endIndex: element.endIndex };
+}
+
+async function getDocStructure(
+  documentId: string,
+  providerAccessToken?: string
+): Promise<{ documentId: string; title: string; revisionId?: string; elements: DocStructureElement[] }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const docs = google.docs({ version: 'v1', auth });
+  const doc = await docs.documents.get({ documentId });
+  const body = doc.data.body;
+  const elements = (body?.content || []).map(summarizeDocElement);
+  return {
+    documentId,
+    title: doc.data.title || 'Untitled Document',
+    revisionId: doc.data.revisionId ?? undefined,
+    elements,
+  };
+}
+
+async function listDocTabs(
+  documentId: string,
+  providerAccessToken?: string
+): Promise<{ documentId: string; tabs: Array<{ tabId: string; title: string; index: number }> }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const docs = google.docs({ version: 'v1', auth });
+  const doc = await docs.documents.get({ documentId, includeTabsContent: false });
+  const tabs = (doc.data.tabs || []).map((tab: any) => ({
+    tabId: tab.tabProperties?.tabId || '',
+    title: tab.tabProperties?.title || '',
+    index: tab.tabProperties?.index ?? 0,
+  }));
+  return { documentId, tabs };
+}
+
 async function appendToTextFile(
   fileId: string,
   content: string,
@@ -2201,6 +2606,218 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           openWorldHint: true,
         },
       },
+      {
+        name: 'gdrive_insert_text_in_doc',
+        description:
+          'Insert text at a specific index in a Google Doc. Use gdrive_get_doc_structure first to find the right index.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const, description: 'Google Docs document ID' },
+            index: { type: 'number' as const, description: '0-based insertion index from gdrive_get_doc_structure' },
+            text: { type: 'string' as const, description: 'Text to insert' },
+          },
+          required: ['documentId', 'index', 'text'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_delete_range_in_doc',
+        description:
+          'Delete content in a Google Doc between startIndex and endIndex. Use gdrive_get_doc_structure to find the right range.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const, description: 'Google Docs document ID' },
+            range: {
+              type: 'object' as const,
+              properties: {
+                startIndex: { type: 'number' as const },
+                endIndex: { type: 'number' as const },
+              },
+              required: ['startIndex', 'endIndex'],
+            },
+          },
+          required: ['documentId', 'range'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_apply_doc_text_style',
+        description:
+          'Apply text styling (bold/italic/underline/strikethrough/fontSize/foregroundColor/backgroundColor/linkUrl) to a range in a Google Doc. ' +
+          'Supply any subset of style fields; colors are 6-digit hex (e.g. "#FF3300").',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            range: {
+              type: 'object' as const,
+              properties: {
+                startIndex: { type: 'number' as const },
+                endIndex: { type: 'number' as const },
+              },
+              required: ['startIndex', 'endIndex'],
+            },
+            bold: { type: 'boolean' as const },
+            italic: { type: 'boolean' as const },
+            underline: { type: 'boolean' as const },
+            strikethrough: { type: 'boolean' as const },
+            fontSize: { type: 'number' as const, description: 'Font size in points' },
+            foregroundColor: { type: 'string' as const, description: 'Hex color, e.g. "#FF3300"' },
+            backgroundColor: { type: 'string' as const, description: 'Hex color, e.g. "#FFFF00"' },
+            linkUrl: { type: 'string' as const, description: 'URL to link the text to' },
+          },
+          required: ['documentId', 'range'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_apply_doc_paragraph_style',
+        description:
+          'Apply paragraph styling (alignment/namedStyleType/lineSpacing/indentStart/indentEnd) to a range in a Google Doc. ' +
+          'namedStyleType is useful for setting headings (HEADING_1..HEADING_6, TITLE, SUBTITLE, NORMAL_TEXT).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            range: {
+              type: 'object' as const,
+              properties: {
+                startIndex: { type: 'number' as const },
+                endIndex: { type: 'number' as const },
+              },
+              required: ['startIndex', 'endIndex'],
+            },
+            alignment: { type: 'string' as const, enum: ['start', 'center', 'end', 'justified'] },
+            namedStyleType: {
+              type: 'string' as const,
+              enum: ['NORMAL_TEXT', 'TITLE', 'SUBTITLE', 'HEADING_1', 'HEADING_2', 'HEADING_3', 'HEADING_4', 'HEADING_5', 'HEADING_6'],
+            },
+            lineSpacing: { type: 'number' as const, description: 'Line spacing multiplier (e.g. 115 for 1.15x)' },
+            indentStart: { type: 'number' as const, description: 'Left indent in points' },
+            indentEnd: { type: 'number' as const, description: 'Right indent in points' },
+          },
+          required: ['documentId', 'range'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_create_doc_bullets',
+        description:
+          'Turn the paragraphs in a range into a bulleted, numbered, or checkbox list in a Google Doc.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            range: {
+              type: 'object' as const,
+              properties: {
+                startIndex: { type: 'number' as const },
+                endIndex: { type: 'number' as const },
+              },
+              required: ['startIndex', 'endIndex'],
+            },
+            listType: {
+              type: 'string' as const,
+              enum: ['bullet', 'numbered', 'checkbox'],
+              description: 'Defaults to "bullet"',
+            },
+          },
+          required: ['documentId', 'range'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_find_replace_in_doc',
+        description:
+          'Replace all occurrences of a string in a Google Doc. Returns how many occurrences were changed.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            find: { type: 'string' as const, description: 'Text to find' },
+            replace: { type: 'string' as const, description: 'Replacement text (can be empty to delete)' },
+            matchCase: { type: 'boolean' as const, description: 'Whether matching is case-sensitive (default false)' },
+          },
+          required: ['documentId', 'find', 'replace'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_insert_table_in_doc',
+        description:
+          'Insert a blank table with the given number of rows and columns at a specific index in a Google Doc.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            index: { type: 'number' as const },
+            rows: { type: 'number' as const, description: 'Number of rows (max 200)' },
+            columns: { type: 'number' as const, description: 'Number of columns (max 20)' },
+          },
+          required: ['documentId', 'index', 'rows', 'columns'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_insert_image_in_doc',
+        description:
+          'Insert an inline image from a publicly accessible URL into a Google Doc. Optional width/height in points.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            index: { type: 'number' as const },
+            imageUrl: { type: 'string' as const, description: 'Publicly accessible image URL' },
+            width: { type: 'number' as const, description: 'Width in points (optional)' },
+            height: { type: 'number' as const, description: 'Height in points (optional)' },
+          },
+          required: ['documentId', 'index', 'imageUrl'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_create_footnote_in_doc',
+        description: 'Insert a footnote anchor at a specific index in a Google Doc. Returns the new footnoteId.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+            index: { type: 'number' as const },
+          },
+          required: ['documentId', 'index'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_get_doc_structure',
+        description:
+          'Get the structured layout of a Google Doc: title, revisionId, and every top-level element (paragraph/table/sectionBreak) ' +
+          'with its startIndex, endIndex, and (for paragraphs) text preview and namedStyleType. Use this to find the right indices ' +
+          'before calling gdrive_insert_text_in_doc, gdrive_delete_range_in_doc, or the style tools.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+          },
+          required: ['documentId'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_list_doc_tabs',
+        description:
+          'List the tabs in a Google Doc (Docs supports multiple tabs per document). Returns each tab\'s tabId, title, and index.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            documentId: { type: 'string' as const },
+          },
+          required: ['documentId'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
     ],
   }));
 
@@ -2766,6 +3383,87 @@ export function createGDriveServer(context?: MCPUserContext): Server {
               text: JSON.stringify({ success: true, ...result }, null, 2),
             }],
           };
+        }
+
+        case 'gdrive_insert_text_in_doc': {
+          const input = InsertTextInDocSchema.parse(args);
+          const result = await insertTextInDoc(input.documentId, input.index, input.text, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_delete_range_in_doc': {
+          const input = DeleteRangeInDocSchema.parse(args);
+          const result = await deleteRangeInDoc(input.documentId, input.range, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_apply_doc_text_style': {
+          const input = ApplyDocTextStyleSchema.parse(args);
+          const result = await applyDocTextStyle(input.documentId, input.range, {
+            bold: input.bold,
+            italic: input.italic,
+            underline: input.underline,
+            strikethrough: input.strikethrough,
+            fontSize: input.fontSize,
+            foregroundColor: input.foregroundColor,
+            backgroundColor: input.backgroundColor,
+            linkUrl: input.linkUrl,
+          }, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_apply_doc_paragraph_style': {
+          const input = ApplyDocParagraphStyleSchema.parse(args);
+          const result = await applyDocParagraphStyle(input.documentId, input.range, {
+            alignment: input.alignment,
+            namedStyleType: input.namedStyleType,
+            lineSpacing: input.lineSpacing,
+            indentStart: input.indentStart,
+            indentEnd: input.indentEnd,
+          }, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_create_doc_bullets': {
+          const input = CreateDocBulletsSchema.parse(args);
+          const result = await createDocBullets(input.documentId, input.range, input.listType, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_find_replace_in_doc': {
+          const input = FindReplaceInDocSchema.parse(args);
+          const result = await findReplaceInDoc(input.documentId, input.find, input.replace, input.matchCase, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_insert_table_in_doc': {
+          const input = InsertTableInDocSchema.parse(args);
+          const result = await insertTableInDoc(input.documentId, input.index, input.rows, input.columns, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_insert_image_in_doc': {
+          const input = InsertImageInDocSchema.parse(args);
+          const result = await insertImageInDoc(input.documentId, input.index, input.imageUrl, input.width, input.height, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_create_footnote_in_doc': {
+          const input = CreateFootnoteInDocSchema.parse(args);
+          const result = await createFootnoteInDoc(input.documentId, input.index, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_get_doc_structure': {
+          const input = GetDocStructureSchema.parse(args);
+          const result = await getDocStructure(input.documentId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_list_doc_tabs': {
+          const input = ListDocTabsSchema.parse(args);
+          const result = await listDocTabs(input.documentId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
         }
 
         default:
