@@ -240,6 +240,116 @@ const ListDocTabsSchema = z.object({
   documentId: z.string().min(1),
 });
 
+const SlideSelector = z
+  .object({
+    slideNumber: z.number().int().positive().optional(),
+    slideObjectId: z.string().min(1).optional(),
+  })
+  .refine((v) => v.slideNumber !== undefined || v.slideObjectId !== undefined, {
+    message: 'Provide either slideNumber (1-based) or slideObjectId',
+  });
+
+const CreatePresentationSchema = z.object({
+  title: z.string().min(1),
+  folderId: z.string().optional(),
+});
+
+const GetPresentationInfoSchema = z.object({
+  presentationId: z.string().min(1),
+});
+
+const CreateSlideSchema = z.object({
+  presentationId: z.string().min(1),
+  insertAtIndex: z.number().int().nonnegative().optional(),
+  layout: z
+    .enum([
+      'BLANK',
+      'CAPTION_ONLY',
+      'TITLE',
+      'TITLE_AND_BODY',
+      'TITLE_AND_TWO_COLUMNS',
+      'TITLE_ONLY',
+      'SECTION_HEADER',
+      'SECTION_TITLE_AND_DESCRIPTION',
+      'ONE_COLUMN_TEXT',
+      'MAIN_POINT',
+      'BIG_NUMBER',
+    ])
+    .optional(),
+});
+
+const DeleteSlideSchema = z
+  .object({
+    presentationId: z.string().min(1),
+    slideNumber: z.number().int().positive().optional(),
+    slideObjectId: z.string().min(1).optional(),
+  })
+  .refine((v) => v.slideNumber !== undefined || v.slideObjectId !== undefined, {
+    message: 'Provide either slideNumber or slideObjectId',
+  });
+
+const DuplicateSlideSchema = DeleteSlideSchema;
+
+const ReorderSlidesSchema = z.object({
+  presentationId: z.string().min(1),
+  slideObjectIds: z.array(z.string().min(1)).min(1),
+  insertAtIndex: z.number().int().nonnegative(),
+});
+
+const CreateSlideTextBoxSchema = z
+  .object({
+    presentationId: z.string().min(1),
+    slideNumber: z.number().int().positive().optional(),
+    slideObjectId: z.string().min(1).optional(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+    width: z.number().positive().optional(),
+    height: z.number().positive().optional(),
+    text: z.string().optional(),
+  })
+  .refine((v) => v.slideNumber !== undefined || v.slideObjectId !== undefined, {
+    message: 'Provide either slideNumber or slideObjectId',
+  });
+
+const InsertSlideTextSchema = z.object({
+  presentationId: z.string().min(1),
+  shapeObjectId: z.string().min(1),
+  text: z.string().min(1),
+  insertionIndex: z.number().int().nonnegative().optional(),
+});
+
+const ReplaceAllTextInSlidesSchema = z.object({
+  presentationId: z.string().min(1),
+  find: z.string().min(1),
+  replace: z.string(),
+  matchCase: z.boolean().optional().default(false),
+});
+
+const GetSpeakerNotesSchema = DeleteSlideSchema;
+
+const UpdateSpeakerNotesSchema = z
+  .object({
+    presentationId: z.string().min(1),
+    slideNumber: z.number().int().positive().optional(),
+    slideObjectId: z.string().min(1).optional(),
+    text: z.string(),
+  })
+  .refine((v) => v.slideNumber !== undefined || v.slideObjectId !== undefined, {
+    message: 'Provide either slideNumber or slideObjectId',
+  });
+
+const ExportSlideThumbnailSchema = z
+  .object({
+    presentationId: z.string().min(1),
+    slideNumber: z.number().int().positive().optional(),
+    slideObjectId: z.string().min(1).optional(),
+    size: z.enum(['SMALL', 'MEDIUM', 'LARGE']).optional().default('LARGE'),
+    imageFormat: z.enum(['png', 'jpeg']).optional().default('png'),
+  })
+  .refine((v) => v.slideNumber !== undefined || v.slideObjectId !== undefined, {
+    message: 'Provide either slideNumber or slideObjectId',
+  });
+
 // ---------- Google Auth ----------
 
 function getGoogleAuth(providerAccessToken?: string) {
@@ -262,7 +372,7 @@ function getGoogleAuth(providerAccessToken?: string) {
     credentials: serviceAccount,
     scopes: [
       'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/presentations.readonly',
+      'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/documents',
       'https://www.googleapis.com/auth/spreadsheets',
     ],
@@ -1702,6 +1812,376 @@ async function listDocTabs(
   return { documentId, tabs };
 }
 
+// ---------- Slides: Authoring ----------
+
+async function slidesBatchUpdate(
+  presentationId: string,
+  requests: any[],
+  providerAccessToken?: string
+): Promise<any> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const res = await slides.presentations.batchUpdate({ presentationId, requestBody: { requests } });
+  return res.data;
+}
+
+async function resolveSlideObjectId(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  providerAccessToken?: string
+): Promise<{ objectId: string; index: number; speakerNotesObjectId?: string }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const pres = await slides.presentations.get({
+    presentationId,
+    fields: 'slides(objectId,slideProperties(notesPage(notesProperties(speakerNotesObjectId))))',
+  });
+  const pages = pres.data.slides || [];
+  if (slideObjectId) {
+    const idx = pages.findIndex((p: any) => p.objectId === slideObjectId);
+    if (idx === -1) throw new Error(`Slide with objectId "${slideObjectId}" not found in presentation ${presentationId}`);
+    return {
+      objectId: slideObjectId,
+      index: idx,
+      speakerNotesObjectId: pages[idx].slideProperties?.notesPage?.notesProperties?.speakerNotesObjectId ?? undefined,
+    };
+  }
+  if (slideNumber !== undefined) {
+    const idx = slideNumber - 1;
+    if (idx < 0 || idx >= pages.length) {
+      throw new Error(`slideNumber ${slideNumber} is out of range (presentation has ${pages.length} slides)`);
+    }
+    return {
+      objectId: pages[idx].objectId!,
+      index: idx,
+      speakerNotesObjectId: pages[idx].slideProperties?.notesPage?.notesProperties?.speakerNotesObjectId ?? undefined,
+    };
+  }
+  throw new Error('resolveSlideObjectId requires slideNumber or slideObjectId');
+}
+
+async function createPresentation(
+  title: string,
+  folderId: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; title: string; url: string; folderId?: string }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const drive = google.drive({ version: 'v3', auth });
+  const created = await slides.presentations.create({ requestBody: { title } });
+  const presentationId = created.data.presentationId!;
+  const url = `https://docs.google.com/presentation/d/${presentationId}`;
+  if (folderId) {
+    const file = await drive.files.get({ fileId: presentationId, fields: 'parents', supportsAllDrives: true });
+    const previousParents = (file.data.parents || []).join(',');
+    await drive.files.update({
+      fileId: presentationId,
+      addParents: folderId,
+      removeParents: previousParents || undefined,
+      fields: 'id,parents',
+      supportsAllDrives: true,
+    });
+  }
+  return {
+    presentationId,
+    title: created.data.title || title,
+    url,
+    ...(folderId ? { folderId } : {}),
+  };
+}
+
+interface SlideShapeSummary {
+  objectId: string;
+  type: string;
+  text?: string;
+}
+
+interface SlideSummary {
+  slideNumber: number;
+  objectId: string;
+  layoutObjectId?: string;
+  speakerNotesObjectId?: string;
+  shapes: SlideShapeSummary[];
+}
+
+function extractShapeText(shape: any): string {
+  const elements = shape?.text?.textElements || [];
+  return elements.map((e: any) => e.textRun?.content || '').join('');
+}
+
+async function getPresentationInfo(
+  presentationId: string,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; title: string; url: string; slideCount: number; slides: SlideSummary[] }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const pres = await slides.presentations.get({ presentationId });
+  const pages = pres.data.slides || [];
+  const out: SlideSummary[] = pages.map((page: any, i: number) => {
+    const shapes: SlideShapeSummary[] = (page.pageElements || []).map((el: any) => {
+      if (el.shape) {
+        return {
+          objectId: el.objectId,
+          type: el.shape.shapeType || 'SHAPE',
+          text: extractShapeText(el.shape),
+        };
+      }
+      if (el.image) return { objectId: el.objectId, type: 'IMAGE' };
+      if (el.table) return { objectId: el.objectId, type: 'TABLE' };
+      if (el.line) return { objectId: el.objectId, type: 'LINE' };
+      return { objectId: el.objectId, type: 'UNKNOWN' };
+    });
+    return {
+      slideNumber: i + 1,
+      objectId: page.objectId,
+      layoutObjectId: page.slideProperties?.layoutObjectId ?? undefined,
+      speakerNotesObjectId: page.slideProperties?.notesPage?.notesProperties?.speakerNotesObjectId ?? undefined,
+      shapes,
+    };
+  });
+  return {
+    presentationId,
+    title: pres.data.title || 'Untitled Presentation',
+    url: `https://docs.google.com/presentation/d/${presentationId}`,
+    slideCount: pages.length,
+    slides: out,
+  };
+}
+
+async function createSlide(
+  presentationId: string,
+  insertAtIndex: number | undefined,
+  layout: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectId: string; insertAtIndex?: number; layout?: string }> {
+  const req: any = {
+    createSlide: {
+      ...(insertAtIndex !== undefined ? { insertionIndex: insertAtIndex } : {}),
+      ...(layout ? { slideLayoutReference: { predefinedLayout: layout } } : {}),
+    },
+  };
+  const data = await slidesBatchUpdate(presentationId, [req], providerAccessToken);
+  const slideObjectId = data.replies?.[0]?.createSlide?.objectId ?? '';
+  return { presentationId, slideObjectId, insertAtIndex, layout };
+}
+
+async function deleteSlide(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; deletedObjectId: string }> {
+  const resolved = await resolveSlideObjectId(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  await slidesBatchUpdate(presentationId, [{ deleteObject: { objectId: resolved.objectId } }], providerAccessToken);
+  return { presentationId, deletedObjectId: resolved.objectId };
+}
+
+async function duplicateSlide(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; originalObjectId: string; newObjectId: string }> {
+  const resolved = await resolveSlideObjectId(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  const data = await slidesBatchUpdate(
+    presentationId,
+    [{ duplicateObject: { objectId: resolved.objectId } }],
+    providerAccessToken
+  );
+  const newObjectId = data.replies?.[0]?.duplicateObject?.objectId ?? '';
+  return { presentationId, originalObjectId: resolved.objectId, newObjectId };
+}
+
+async function reorderSlides(
+  presentationId: string,
+  slideObjectIds: string[],
+  insertAtIndex: number,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectIds: string[]; insertAtIndex: number }> {
+  await slidesBatchUpdate(
+    presentationId,
+    [{ updateSlidesPosition: { slideObjectIds, insertionIndex: insertAtIndex } }],
+    providerAccessToken
+  );
+  return { presentationId, slideObjectIds, insertAtIndex };
+}
+
+async function createSlideTextBox(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  x: number | undefined,
+  y: number | undefined,
+  width: number | undefined,
+  height: number | undefined,
+  text: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectId: string; textBoxObjectId: string }> {
+  const resolved = await resolveSlideObjectId(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  const defaultW = width ?? 360;
+  const defaultH = height ?? 60;
+  const defaultX = x ?? 50;
+  const defaultY = y ?? 50;
+  const textBoxId = `textbox_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+  const requests: any[] = [
+    {
+      createShape: {
+        objectId: textBoxId,
+        shapeType: 'TEXT_BOX',
+        elementProperties: {
+          pageObjectId: resolved.objectId,
+          size: {
+            width: { magnitude: defaultW, unit: 'PT' },
+            height: { magnitude: defaultH, unit: 'PT' },
+          },
+          transform: {
+            scaleX: 1,
+            scaleY: 1,
+            translateX: defaultX,
+            translateY: defaultY,
+            unit: 'PT',
+          },
+        },
+      },
+    },
+  ];
+  if (text) {
+    requests.push({ insertText: { objectId: textBoxId, text } });
+  }
+  await slidesBatchUpdate(presentationId, requests, providerAccessToken);
+  return { presentationId, slideObjectId: resolved.objectId, textBoxObjectId: textBoxId };
+}
+
+async function insertSlideText(
+  presentationId: string,
+  shapeObjectId: string,
+  text: string,
+  insertionIndex: number | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; shapeObjectId: string; insertedLength: number }> {
+  const req: any = {
+    insertText: {
+      objectId: shapeObjectId,
+      text,
+      ...(insertionIndex !== undefined ? { insertionIndex } : {}),
+    },
+  };
+  await slidesBatchUpdate(presentationId, [req], providerAccessToken);
+  return { presentationId, shapeObjectId, insertedLength: text.length };
+}
+
+async function replaceAllTextInSlides(
+  presentationId: string,
+  find: string,
+  replace: string,
+  matchCase: boolean,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; occurrencesChanged: number }> {
+  const data = await slidesBatchUpdate(
+    presentationId,
+    [{ replaceAllText: { containsText: { text: find, matchCase }, replaceText: replace } }],
+    providerAccessToken
+  );
+  const reply = data.replies?.[0]?.replaceAllText;
+  return { presentationId, occurrencesChanged: reply?.occurrencesChanged ?? 0 };
+}
+
+async function getSpeakerNotes(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectId: string; speakerNotesObjectId?: string; text: string }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const resolved = await resolveSlideObjectId(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  const pres = await slides.presentations.get({
+    presentationId,
+    fields: 'slides(objectId,slideProperties(notesPage(pageElements(shape(text(textElements(textRun(content))))),notesProperties(speakerNotesObjectId))))',
+  });
+  const page = (pres.data.slides || []).find((p: any) => p.objectId === resolved.objectId);
+  const notesPage = page?.slideProperties?.notesPage;
+  const speakerNotesObjectId = notesPage?.notesProperties?.speakerNotesObjectId ?? undefined;
+  const notesShape = (notesPage?.pageElements || []).find((el: any) => el.objectId === speakerNotesObjectId);
+  const text = extractShapeText(notesShape?.shape);
+  return {
+    presentationId,
+    slideObjectId: resolved.objectId,
+    speakerNotesObjectId,
+    text,
+  };
+}
+
+async function updateSpeakerNotes(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  text: string,
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectId: string; speakerNotesObjectId?: string }> {
+  const existing = await getSpeakerNotes(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  if (!existing.speakerNotesObjectId) {
+    throw new Error('This slide has no speakerNotes object — speaker notes cannot be updated.');
+  }
+  const requests: any[] = [];
+  if (existing.text && existing.text.length > 0) {
+    requests.push({
+      deleteText: {
+        objectId: existing.speakerNotesObjectId,
+        textRange: { type: 'ALL' },
+      },
+    });
+  }
+  if (text.length > 0) {
+    requests.push({ insertText: { objectId: existing.speakerNotesObjectId, text, insertionIndex: 0 } });
+  }
+  if (requests.length > 0) {
+    await slidesBatchUpdate(presentationId, requests, providerAccessToken);
+  }
+  return {
+    presentationId,
+    slideObjectId: existing.slideObjectId,
+    speakerNotesObjectId: existing.speakerNotesObjectId,
+  };
+}
+
+async function exportSlideThumbnail(
+  presentationId: string,
+  slideNumber: number | undefined,
+  slideObjectId: string | undefined,
+  size: 'SMALL' | 'MEDIUM' | 'LARGE',
+  imageFormat: 'png' | 'jpeg',
+  providerAccessToken?: string
+): Promise<{ presentationId: string; slideObjectId: string; mimeType: string; base64: string }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const slides = google.slides({ version: 'v1', auth });
+  const resolved = await resolveSlideObjectId(presentationId, slideNumber, slideObjectId, providerAccessToken);
+  const thumbnail = await slides.presentations.pages.getThumbnail({
+    presentationId,
+    pageObjectId: resolved.objectId,
+    'thumbnailProperties.thumbnailSize': size,
+    'thumbnailProperties.mimeType': 'PNG',
+  });
+  const contentUrl = thumbnail.data.contentUrl;
+  if (!contentUrl) throw new Error('Failed to retrieve thumbnail URL');
+  const imageResponse = await fetch(contentUrl);
+  const arrayBuffer = await imageResponse.arrayBuffer();
+  let imageBuffer: Buffer = Buffer.from(arrayBuffer);
+  let mimeType = 'image/png';
+  if (imageFormat === 'jpeg') {
+    const sharp = (await import('sharp')).default;
+    imageBuffer = await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer();
+    mimeType = 'image/jpeg';
+  }
+  return {
+    presentationId,
+    slideObjectId: resolved.objectId,
+    mimeType,
+    base64: imageBuffer.toString('base64'),
+  };
+}
+
 async function appendToTextFile(
   fileId: string,
   content: string,
@@ -2818,6 +3298,200 @@ export function createGDriveServer(context?: MCPUserContext): Server {
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
+      {
+        name: 'gdrive_create_presentation',
+        description: 'Create a new Google Slides presentation. Optionally place it in a folder. Returns the new presentationId and URL.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            title: { type: 'string' as const, description: 'Presentation title' },
+            folderId: { type: 'string' as const, description: 'Optional Drive folder ID to place the presentation in' },
+          },
+          required: ['title'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_get_presentation_info',
+        description:
+          'Get the structure of a Google Slides presentation: title, URL, slide count, and for each slide the slideNumber, objectId, layoutObjectId, speakerNotesObjectId, and a list of shape objectIds + text. ' +
+          'Use this to discover the objectIds needed by other slide tools.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const, description: 'Google Slides presentation ID or URL' },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_create_slide',
+        description:
+          'Create a new slide in a Google Slides presentation. Optionally specify an insertAtIndex (0-based) and a predefined layout.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            insertAtIndex: { type: 'number' as const, description: '0-based slide index to insert at. Defaults to end.' },
+            layout: {
+              type: 'string' as const,
+              enum: [
+                'BLANK', 'CAPTION_ONLY', 'TITLE', 'TITLE_AND_BODY', 'TITLE_AND_TWO_COLUMNS', 'TITLE_ONLY',
+                'SECTION_HEADER', 'SECTION_TITLE_AND_DESCRIPTION', 'ONE_COLUMN_TEXT', 'MAIN_POINT', 'BIG_NUMBER',
+              ],
+              description: 'Predefined slide layout. Defaults to the presentation master\'s default layout.',
+            },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_delete_slide',
+        description: 'Delete a slide from a Google Slides presentation. Accepts either a 1-based slideNumber or a slideObjectId.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const, description: '1-based slide number' },
+            slideObjectId: { type: 'string' as const, description: 'Stable slide objectId (from gdrive_get_presentation_info)' },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_duplicate_slide',
+        description: 'Duplicate a slide in a Google Slides presentation. Returns the new slide\'s objectId.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const },
+            slideObjectId: { type: 'string' as const },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_reorder_slides',
+        description:
+          'Reorder slides in a Google Slides presentation. Provide the objectIds of the slides to move (in the new order they should appear) and the 0-based insertion index.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideObjectIds: {
+              type: 'array' as const,
+              items: { type: 'string' as const },
+              description: 'The slide objectIds to move, in the order they should appear after the move.',
+            },
+            insertAtIndex: { type: 'number' as const, description: '0-based position to insert the moved slides at' },
+          },
+          required: ['presentationId', 'slideObjectIds', 'insertAtIndex'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_create_slide_text_box',
+        description:
+          'Create a text box on a slide. Position (x, y) and size (width, height) are in points; sensible defaults are used if omitted. Optionally set initial text.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const },
+            slideObjectId: { type: 'string' as const },
+            x: { type: 'number' as const, description: 'X position in points (defaults to 50)' },
+            y: { type: 'number' as const, description: 'Y position in points (defaults to 50)' },
+            width: { type: 'number' as const, description: 'Width in points (defaults to 360)' },
+            height: { type: 'number' as const, description: 'Height in points (defaults to 60)' },
+            text: { type: 'string' as const, description: 'Optional initial text' },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_insert_slide_text',
+        description:
+          'Insert text into an existing shape on a slide (by shape objectId). Use gdrive_get_presentation_info to find shape objectIds.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            shapeObjectId: { type: 'string' as const, description: 'The shape objectId to insert text into' },
+            text: { type: 'string' as const, description: 'Text to insert' },
+            insertionIndex: { type: 'number' as const, description: 'Optional index at which to insert (defaults to start)' },
+          },
+          required: ['presentationId', 'shapeObjectId', 'text'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_replace_all_text_in_slides',
+        description: 'Replace all occurrences of a string across every slide in a presentation. Returns how many occurrences were changed.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            find: { type: 'string' as const },
+            replace: { type: 'string' as const },
+            matchCase: { type: 'boolean' as const, description: 'Case-sensitive match (default false)' },
+          },
+          required: ['presentationId', 'find', 'replace'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_get_speaker_notes',
+        description: 'Get the speaker notes text for a slide.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const },
+            slideObjectId: { type: 'string' as const },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_update_speaker_notes',
+        description:
+          'Replace the speaker notes on a slide with new text. Pass an empty string to clear the notes.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const },
+            slideObjectId: { type: 'string' as const },
+            text: { type: 'string' as const, description: 'New speaker notes text (empty string clears existing notes)' },
+          },
+          required: ['presentationId', 'text'],
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      },
+      {
+        name: 'gdrive_export_slide_thumbnail',
+        description:
+          'Render a single slide as a thumbnail image. Returns the image inline (as an MCP image content block). size is SMALL/MEDIUM/LARGE; default LARGE. Default format is png.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            presentationId: { type: 'string' as const },
+            slideNumber: { type: 'number' as const },
+            slideObjectId: { type: 'string' as const },
+            size: { type: 'string' as const, enum: ['SMALL', 'MEDIUM', 'LARGE'] },
+            imageFormat: { type: 'string' as const, enum: ['png', 'jpeg'] },
+          },
+          required: ['presentationId'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
     ],
   }));
 
@@ -3466,6 +4140,139 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
         }
 
+        case 'gdrive_create_presentation': {
+          const input = CreatePresentationSchema.parse(args);
+          const result = await createPresentation(input.title, input.folderId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_get_presentation_info': {
+          const input = GetPresentationInfoSchema.parse(args);
+          const result = await getPresentationInfo(input.presentationId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_create_slide': {
+          const input = CreateSlideSchema.parse(args);
+          const result = await createSlide(input.presentationId, input.insertAtIndex, input.layout, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_delete_slide': {
+          const input = DeleteSlideSchema.parse(args);
+          const result = await deleteSlide(input.presentationId, input.slideNumber, input.slideObjectId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_duplicate_slide': {
+          const input = DuplicateSlideSchema.parse(args);
+          const result = await duplicateSlide(input.presentationId, input.slideNumber, input.slideObjectId, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_reorder_slides': {
+          const input = ReorderSlidesSchema.parse(args);
+          const result = await reorderSlides(input.presentationId, input.slideObjectIds, input.insertAtIndex, providerAccessToken);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_create_slide_text_box': {
+          const input = CreateSlideTextBoxSchema.parse(args);
+          const result = await createSlideTextBox(
+            input.presentationId,
+            input.slideNumber,
+            input.slideObjectId,
+            input.x,
+            input.y,
+            input.width,
+            input.height,
+            input.text,
+            providerAccessToken
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_insert_slide_text': {
+          const input = InsertSlideTextSchema.parse(args);
+          const result = await insertSlideText(
+            input.presentationId,
+            input.shapeObjectId,
+            input.text,
+            input.insertionIndex,
+            providerAccessToken
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_replace_all_text_in_slides': {
+          const input = ReplaceAllTextInSlidesSchema.parse(args);
+          const result = await replaceAllTextInSlides(
+            input.presentationId,
+            input.find,
+            input.replace,
+            input.matchCase,
+            providerAccessToken
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_get_speaker_notes': {
+          const input = GetSpeakerNotesSchema.parse(args);
+          const result = await getSpeakerNotes(
+            input.presentationId,
+            input.slideNumber,
+            input.slideObjectId,
+            providerAccessToken
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_update_speaker_notes': {
+          const input = UpdateSpeakerNotesSchema.parse(args);
+          const result = await updateSpeakerNotes(
+            input.presentationId,
+            input.slideNumber,
+            input.slideObjectId,
+            input.text,
+            providerAccessToken
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...result }, null, 2) }] };
+        }
+
+        case 'gdrive_export_slide_thumbnail': {
+          const input = ExportSlideThumbnailSchema.parse(args);
+          const result = await exportSlideThumbnail(
+            input.presentationId,
+            input.slideNumber,
+            input.slideObjectId,
+            input.size,
+            input.imageFormat,
+            providerAccessToken
+          );
+          return {
+            content: [
+              {
+                type: 'image',
+                data: result.base64,
+                mimeType: result.mimeType,
+              },
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    success: true,
+                    presentationId: result.presentationId,
+                    slideObjectId: result.slideObjectId,
+                    mimeType: result.mimeType,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -3488,7 +4295,7 @@ export const gdrive: MCPServerDefinition = {
   auth: {
     scopes: [
       'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/presentations.readonly',
+      'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/documents',
       'https://www.googleapis.com/auth/spreadsheets',
     ],
