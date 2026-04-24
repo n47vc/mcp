@@ -97,6 +97,26 @@ const MoveFileSchema = z.object({
   destinationFolderId: z.string().min(1),
 });
 
+const SheetCellValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+const AppendSheetRowsSchema = z.object({
+  fileId: z.string().min(1),
+  sheetName: z.string().min(1),
+  rows: z.array(z.array(SheetCellValue)).min(1),
+});
+
+const UpdateSheetRowsSchema = z.object({
+  fileId: z.string().min(1),
+  sheetName: z.string().min(1),
+  startRowIndex: z.number().int().positive(),
+  rows: z.array(z.array(SheetCellValue)).min(1),
+});
+
+const AddSheetSchema = z.object({
+  fileId: z.string().min(1),
+  sheetName: z.string().min(1),
+});
+
 // ---------- Google Auth ----------
 
 function getGoogleAuth(providerAccessToken?: string) {
@@ -121,7 +141,7 @@ function getGoogleAuth(providerAccessToken?: string) {
       'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/presentations.readonly',
       'https://www.googleapis.com/auth/documents',
-      'https://www.googleapis.com/auth/spreadsheets.readonly',
+      'https://www.googleapis.com/auth/spreadsheets',
     ],
   });
 }
@@ -785,6 +805,74 @@ async function readSpreadsheet(spreadsheetId: string, sheetName?: string, provid
     headers,
     rows: dataRows,
     rowCount: dataRows.length,
+  };
+}
+
+type SheetCell = string | number | boolean | null;
+
+async function appendSheetRows(
+  fileId: string,
+  sheetName: string,
+  rows: SheetCell[][],
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetName: string; updatedRange?: string; updatedRows: number }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const res = await sheets.spreadsheets.values.append({
+    spreadsheetId: fileId,
+    range: `'${sheetName}'!A:A`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows },
+  });
+  return {
+    fileId,
+    sheetName,
+    updatedRange: res.data.updates?.updatedRange ?? undefined,
+    updatedRows: res.data.updates?.updatedRows ?? 0,
+  };
+}
+
+async function updateSheetRows(
+  fileId: string,
+  sheetName: string,
+  startRowIndex: number,
+  rows: SheetCell[][],
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetName: string; updatedRange?: string; updatedRows: number }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const endRowIndex = startRowIndex + rows.length - 1;
+  const res = await sheets.spreadsheets.values.update({
+    spreadsheetId: fileId,
+    range: `'${sheetName}'!A${startRowIndex}:ZZ${endRowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: rows },
+  });
+  return {
+    fileId,
+    sheetName,
+    updatedRange: res.data.updatedRange ?? undefined,
+    updatedRows: res.data.updatedRows ?? 0,
+  };
+}
+
+async function addSheet(
+  fileId: string,
+  sheetName: string,
+  providerAccessToken?: string
+): Promise<{ fileId: string; sheetName: string; sheetId?: number }> {
+  const auth = getGoogleAuth(providerAccessToken);
+  const sheets = google.sheets({ version: 'v4', auth });
+  const res = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: fileId,
+    requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] },
+  });
+  const props = res.data.replies?.[0]?.addSheet?.properties;
+  return {
+    fileId,
+    sheetName: props?.title ?? sheetName,
+    sheetId: props?.sheetId ?? undefined,
   };
 }
 
@@ -1633,6 +1721,106 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           openWorldHint: true,
         },
       },
+      {
+        name: 'gdrive_append_sheet_rows',
+        description:
+          'Append one or more rows to the end of a Google Sheets tab. ' +
+          'Cell values are parsed as if entered by a user (USER_ENTERED), so dates, numbers, and formulas work. ' +
+          'Use gdrive_read_sheet first to discover sheet tab names.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            sheetName: {
+              type: 'string' as const,
+              description: 'Tab name to append rows to (e.g. "ELO Ratings")',
+            },
+            rows: {
+              type: 'array' as const,
+              description: 'Array of rows; each row is an array of cell values (string, number, boolean, or null)',
+              items: {
+                type: 'array' as const,
+                items: { type: ['string', 'number', 'boolean', 'null'] as any },
+              },
+            },
+          },
+          required: ['fileId', 'sheetName', 'rows'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_update_sheet_rows',
+        description:
+          'Overwrite a contiguous block of rows in a Google Sheets tab starting at a 1-based row index. ' +
+          'Row 1 is the header row, so the first data row is 2. ' +
+          'Read the sheet first (gdrive_read_sheet) to find the right row index. ' +
+          'Cell values are parsed with USER_ENTERED.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            sheetName: {
+              type: 'string' as const,
+              description: 'Tab name to write to',
+            },
+            startRowIndex: {
+              type: 'number' as const,
+              description: '1-based row index to start writing at; row 1 is the header, row 2 is the first data row',
+            },
+            rows: {
+              type: 'array' as const,
+              description: 'Array of rows; each row is an array of cell values',
+              items: {
+                type: 'array' as const,
+                items: { type: ['string', 'number', 'boolean', 'null'] as any },
+              },
+            },
+          },
+          required: ['fileId', 'sheetName', 'startRowIndex', 'rows'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      {
+        name: 'gdrive_add_sheet',
+        description:
+          'Create a new tab in an existing Google Sheets spreadsheet. Errors if a tab with the same name already exists.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            fileId: {
+              type: 'string' as const,
+              description: 'Google Sheets spreadsheet ID or full URL',
+            },
+            sheetName: {
+              type: 'string' as const,
+              description: 'Name of the new tab to create',
+            },
+          },
+          required: ['fileId', 'sheetName'],
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
     ],
   }));
 
@@ -2067,6 +2255,54 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           };
         }
 
+        case 'gdrive_append_sheet_rows': {
+          const input = AppendSheetRowsSchema.parse(args);
+          const result = await appendSheetRows(
+            input.fileId,
+            input.sheetName,
+            input.rows,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_update_sheet_rows': {
+          const input = UpdateSheetRowsSchema.parse(args);
+          const result = await updateSheetRows(
+            input.fileId,
+            input.sheetName,
+            input.startRowIndex,
+            input.rows,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
+        case 'gdrive_add_sheet': {
+          const input = AddSheetSchema.parse(args);
+          const result = await addSheet(
+            input.fileId,
+            input.sheetName,
+            providerAccessToken
+          );
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, ...result }, null, 2),
+            }],
+          };
+        }
+
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -2091,7 +2327,7 @@ export const gdrive: MCPServerDefinition = {
       'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/presentations.readonly',
       'https://www.googleapis.com/auth/documents',
-      'https://www.googleapis.com/auth/spreadsheets.readonly',
+      'https://www.googleapis.com/auth/spreadsheets',
     ],
   },
 };
