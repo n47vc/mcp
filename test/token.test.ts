@@ -287,3 +287,115 @@ describe('refresh_token grant', () => {
     expect(res.body.access_token).toBeTruthy();
   });
 });
+
+describe('onAuthGranted hook', () => {
+  it('fires on authorization_code grant with email, name, refresh_token, scopes', async () => {
+    const onAuthGranted = vi.fn();
+    const config = makeConfig({ onAuthGranted });
+    const verifier = 'test-verifier';
+    const codeChallenge = createHash('sha256').update(verifier).digest('base64url');
+    const code = await signAuthCode({
+      email: 'user@example.com',
+      name: 'User',
+      client_id: 'cid',
+      code_challenge: codeChallenge,
+      redirect_uri: 'https://example.com/cb',
+      scope: 'email profile',
+      provider_access_token: 'google-at',
+      provider_refresh_token: 'google-rt',
+    }, config);
+
+    const handler = createTokenHandler(config);
+    const res = mockRes();
+    await handler(mockReq('POST', {
+      grant_type: 'authorization_code',
+      code,
+      code_verifier: verifier,
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(onAuthGranted).toHaveBeenCalledTimes(1);
+    expect(onAuthGranted).toHaveBeenCalledWith({
+      email: 'user@example.com',
+      name: 'User',
+      refresh_token: 'google-rt',
+      scopes: ['email', 'profile'],
+    });
+  });
+
+  it('fires on refresh_token grant with the carried-over refresh_token', async () => {
+    const onAuthGranted = vi.fn();
+    const config = makeConfig({ onAuthGranted });
+    const rt = await signRefreshToken({
+      email: 'user@example.com',
+      name: 'User',
+      scopes: ['email'],
+      provider_refresh_token: 'google-rt',
+    }, config);
+
+    const handler = createTokenHandler(config);
+    const res = mockRes();
+    await handler(mockReq('POST', {
+      grant_type: 'refresh_token',
+      refresh_token: rt,
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(onAuthGranted).toHaveBeenCalledWith({
+      email: 'user@example.com',
+      name: 'User',
+      refresh_token: 'google-rt',
+      scopes: ['email'],
+    });
+  });
+
+  it('passes refresh_token: undefined when provider did not return one', async () => {
+    const onAuthGranted = vi.fn();
+    const config = makeConfig({ onAuthGranted });
+    const verifier = 'test-verifier';
+    const codeChallenge = createHash('sha256').update(verifier).digest('base64url');
+    const code = await signAuthCode({
+      email: 'user@example.com',
+      name: 'User',
+      client_id: 'cid',
+      code_challenge: codeChallenge,
+      redirect_uri: 'https://example.com/cb',
+      provider_access_token: 'google-at',
+    }, config);
+
+    const handler = createTokenHandler(config);
+    const res = mockRes();
+    await handler(mockReq('POST', {
+      grant_type: 'authorization_code',
+      code,
+      code_verifier: verifier,
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(onAuthGranted).toHaveBeenCalledWith(expect.objectContaining({
+      refresh_token: undefined,
+    }));
+  });
+
+  it('does not fail the flow if the hook throws', async () => {
+    const onAuthGranted = vi.fn(async () => { throw new Error('persist failed'); });
+    const config = makeConfig({ onAuthGranted });
+    const rt = await signRefreshToken({
+      email: 'user@example.com',
+      name: 'User',
+      scopes: ['email'],
+      provider_refresh_token: 'google-rt',
+    }, config);
+
+    const handler = createTokenHandler(config);
+    const res = mockRes();
+    await handler(mockReq('POST', {
+      grant_type: 'refresh_token',
+      refresh_token: rt,
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.access_token).toBeTruthy();
+    expect(onAuthGranted).toHaveBeenCalled();
+  });
+});

@@ -199,6 +199,7 @@ See each server's README for full tool documentation:
 | `allowedDomain` | `string` | No | Restrict to emails from this domain (e.g., `'mycompany.com'`) |
 | `onToolCall` | `function` | No | Hook fired before a tool executes. Return a `CallToolResult` to block execution. |
 | `onToolComplete` | `function` | No | Hook fired after a tool executes. Return a `CallToolResult` to override the response. |
+| `onAuthGranted` | `function` | No | Hook fired whenever access tokens are minted — first OAuth grant and every subsequent refresh. Receives `{ email, name, refresh_token?, scopes }`. Useful for persisting the provider refresh token. Errors are logged but do not fail auth. |
 | `tokenLifetimes` | `object` | No | Override token lifetimes (`accessToken`, `refreshToken`, `authCode` — jose duration strings like `'1h'`, `'90d'`, `'5m'`) |
 
 ### `createGoogleAuthProvider(options)`

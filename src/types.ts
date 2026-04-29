@@ -54,6 +54,20 @@ export interface MCPAppConfig {
     error: unknown,
     email?: string,
   ) => void | CallToolResult | Promise<void | CallToolResult>;
+  /**
+   * Hook fired whenever access tokens are minted — both on first OAuth grant
+   * and on every subsequent refresh while the user is active. Useful for
+   * persisting the provider refresh token for offline access.
+   *
+   * `refresh_token` may be undefined on re-auth (some providers, e.g. Google,
+   * only return it on first consent). Errors are logged but do not fail the flow.
+   */
+  onAuthGranted?: (info: {
+    email: string;
+    name: string;
+    refresh_token?: string;
+    scopes: string[];
+  }) => void | Promise<void>;
   /** Token lifetime overrides */
   tokenLifetimes?: {
     /** Access token lifetime (jose duration string, e.g. '1h'). Default: '1h' */
