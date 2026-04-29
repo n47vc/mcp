@@ -2,6 +2,18 @@ import type { MCPAppConfig } from '../types';
 import { verifyAuthCode, verifyRefreshToken, signAccessToken, signRefreshToken, verifyPKCE } from '../auth/jwt';
 import { AuthError, ProviderError } from '../errors';
 
+async function fireAuthGranted(
+  config: MCPAppConfig,
+  info: { email: string; name: string; refresh_token?: string; scopes: string[] },
+) {
+  if (!config.onAuthGranted) return;
+  try {
+    await config.onAuthGranted(info);
+  } catch (err) {
+    console.error('[MCP onAuthGranted]', err);
+  }
+}
+
 /** Parse a jose-style duration string (e.g. '1h', '90d', '5m') to seconds. */
 function durationToSeconds(duration: string): number {
   const match = duration.match(/^(\d+)\s*(s|m|h|d)$/);
@@ -111,6 +123,13 @@ async function handleAuthorizationCode(body: Record<string, string>, config: MCP
     provider_refresh_token: providerRefreshToken,
   }, config);
 
+  await fireAuthGranted(config, {
+    email: authCode.email,
+    name: authCode.name,
+    refresh_token: providerRefreshToken,
+    scopes,
+  });
+
   return res.status(200).json({
     access_token: accessToken,
     token_type: 'Bearer',
@@ -163,6 +182,13 @@ async function handleRefreshToken(body: Record<string, string>, config: MCPAppCo
     scopes,
     provider_refresh_token: providerRefreshToken,
   }, config);
+
+  await fireAuthGranted(config, {
+    email: refreshPayload.email,
+    name: refreshPayload.name,
+    refresh_token: providerRefreshToken,
+    scopes,
+  });
 
   return res.status(200).json({
     access_token: accessToken,
