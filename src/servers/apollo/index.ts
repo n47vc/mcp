@@ -30,7 +30,7 @@ async function searchPeople(params: { q_keywords?: string; q_organization_domain
   if (params.q_keywords) body.q_keywords = params.q_keywords;
   if (params.q_organization_domains) body.q_organization_domains = params.q_organization_domains;
   if (params.person_titles) body.person_titles = params.person_titles;
-  const data = await apolloPost('/mixed_people/search', body);
+  const data = await apolloPost('/mixed_people/api_search', body);
   return data.people || [];
 }
 
@@ -129,7 +129,18 @@ function formatPersonFull(p: any) {
 export function createApolloServer(context?: MCPUserContext): Server {
   const server = new Server(
     { name: 'apollo-people', version: '1.0.0' },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions: [
+        '## Apollo usage rules',
+        '',
+        '- apollo_organization_top_people reliably returns zero results for companies with fewer than 50 employees. Skip this call for seed-stage targets.',
+        '- Apollo enrichment is sparse for low-profile technical co-founders and stealth companies. Run a web search in parallel when founding team data is thin.',
+        '- For rebranded companies, retry enrichment on the pre-rebrand domain — the legacy domain returns full departmental data while the new domain returns nothing.',
+        '- apollo_bulk_enrich_organizations can return 50–180KB of JSON for 10 companies. When the result exceeds ~25KB, save it to a file and delegate parsing to a subagent.',
+        '- Apollo can merge an unrelated same-named company into the target\'s record for common-word company names. Always cross-check Apollo\'s short_description against the live website and founding team before citing HQ, funding, or customers for any company with a common-word name.',
+      ].join('\n'),
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -185,7 +196,7 @@ export function createApolloServer(context?: MCPUserContext): Server {
       },
       {
         name: 'apollo_enrich_person',
-        description: 'Enrich a person\'s profile using any combination of identifiers.',
+        description: 'Enrich a person\'s profile using any combination of identifiers.\n\nUsage notes:\n- Use name + domain as parameters for best results (not name alone).\n- Enrichment quality varies — low-profile technical co-founders and people at stealth companies often return near-empty profiles. Supplement with web search when this happens.',
         inputSchema: {
           type: 'object' as const,
           properties: {
