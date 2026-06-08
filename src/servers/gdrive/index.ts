@@ -2362,7 +2362,18 @@ export function createGDriveServer(context?: MCPUserContext): Server {
   const jwtSecret = context?._secret;
   const server = new Server(
     { name: 'google-drive', version: '1.0.0' },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions: [
+        '## Google Drive usage rules',
+        '',
+        '- gdrive_upload_file returns a single-use upload token that expires in 10 minutes. The curl upload command must be the VERY NEXT tool call after receiving the token — no other tool calls may intervene. To ensure this: load all tool schemas needed for post-upload steps (e.g. affinity_create_note) BEFORE calling gdrive_upload_file, then immediately execute the curl in the next step.',
+        '- gdrive_list_sheets and gdrive_get_spreadsheet_info do not work on uploaded .xlsx files — they only work on native Google Sheets. Use gdrive_read_sheet directly on .xlsx files; it converts on the fly and returns sheet names inline.',
+        '- gdrive_list_folder with recursive=true is more reliable than querying by parentId for nested folder trees.',
+        '- For active N47 pipeline companies, the ATN deck in Google Drive is almost always the richest single data source — it contains validated ARR, pipeline, financial model, proposed terms, competitive landscape, and expert call notes already synthesised by the deal team. Read it before spending time on external sources.',
+        '- The writable DD output folder is: 1MGeO05qznxqoPWc_d3TPq-ysBy9aD8Aj. Deal-specific subfolders may block writes due to permissions — if a write fails, fall back to this parent DD folder.',
+      ].join('\n'),
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -2445,7 +2456,8 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           'much faster than manually listing each subfolder. Recursion stops at maxDepth (default 4); ' +
           'folders beyond the depth limit are marked with truncated=true. ' +
           'To browse a shared drive root, pass the shared drive ID as the folderId. ' +
-          'Typical workflow: gdrive_list_shared_drives → gdrive_list_folder (drive root, recursive=true) → read files.',
+          'Typical workflow: gdrive_list_shared_drives → gdrive_list_folder (drive root, recursive=true) → read files.' +
+          '\n\nUsage notes:\n- Use recursive=true when searching for files in nested subfolders. Querying by parentId alone can miss content.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -2683,7 +2695,8 @@ export function createGDriveServer(context?: MCPUserContext): Server {
           'Upload a file to a Google Drive folder. Returns a short-lived upload URL and a curl command. ' +
           'The user must run the curl command in their terminal to upload the actual file binary. ' +
           'Supports any file type including .docx, .pdf, .xlsx, .pptx, .csv, .txt, images, etc. ' +
-          'Set convertToGoogleFormat=true to convert Office files to Google native format on upload.',
+          'Set convertToGoogleFormat=true to convert Office files to Google native format on upload.' +
+          '\n\nUsage notes:\n- Returns a single-use upload token that expires in 10 minutes. Execute the curl upload as the VERY NEXT tool call — no other tool calls may come between this call and the curl. Load any schemas you need for post-upload steps before calling this tool.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -2993,7 +3006,8 @@ export function createGDriveServer(context?: MCPUserContext): Server {
       {
         name: 'gdrive_get_spreadsheet_info',
         description:
-          'Get metadata about a Google Sheets spreadsheet: title, URL, and all tabs with their sheetId, index, and grid dimensions.',
+          'Get metadata about a Google Sheets spreadsheet: title, URL, and all tabs with their sheetId, index, and grid dimensions.' +
+          '\n\nUsage notes:\n- Does not work on uploaded .xlsx files (only native Google Sheets). Use gdrive_read_sheet directly on .xlsx files instead — it converts on the fly.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -3014,7 +3028,8 @@ export function createGDriveServer(context?: MCPUserContext): Server {
       {
         name: 'gdrive_list_sheets',
         description:
-          'List the names of all tabs in a Google Sheets spreadsheet. Lightweight call when only tab names are needed; use gdrive_get_spreadsheet_info for fuller metadata.',
+          'List the names of all tabs in a Google Sheets spreadsheet. Lightweight call when only tab names are needed; use gdrive_get_spreadsheet_info for fuller metadata.' +
+          '\n\nUsage notes:\n- Does not work on uploaded .xlsx files (only native Google Sheets). Use gdrive_read_sheet directly on .xlsx files instead — it converts on the fly.',
         inputSchema: {
           type: 'object' as const,
           properties: {

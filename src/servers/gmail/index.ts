@@ -199,7 +199,16 @@ export function createGmailServer(context?: MCPUserContext): Server {
   const providerAccessToken = context?.provider_access_token;
   const server = new Server(
     { name: 'gmail', version: '1.0.0' },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions: [
+        '## Gmail usage rules',
+        '',
+        '- gmail_list_emails and gmail_list_threads can return very large responses (100KB+) for inboxes with rich history. When a response exceeds ~25KB, save it to a file and delegate parsing to a subagent (Agent tool) rather than reading inline.',
+        '- When searching for correspondence about a specific company, search both the company name AND the founder names separately — email threads often reference founders by name without mentioning the company.',
+        '- The most recent email thread with a founder is almost always more current than Affinity notes — check Gmail for the latest context before finalising any meeting prep brief.',
+      ].join('\n'),
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -212,7 +221,7 @@ export function createGmailServer(context?: MCPUserContext): Server {
       },
       {
         name: 'gmail_list_threads',
-        description: 'List threads in the user\'s mailbox. Supports Gmail search syntax for filtering.',
+        description: 'List threads in the user\'s mailbox. Supports Gmail search syntax for filtering.\n\nUsage notes:\n- Can return very large responses (100KB+) for inboxes with rich history. When a response exceeds ~25KB, save to file and delegate parsing to a subagent rather than reading inline.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -235,7 +244,7 @@ export function createGmailServer(context?: MCPUserContext): Server {
       },
       {
         name: 'gmail_list_emails',
-        description: 'List emails with full content. For conversations, prefer gmail_get_thread.',
+        description: 'List emails with full content. For conversations, prefer gmail_get_thread.\n\nUsage notes:\n- Can return very large responses (100KB+) for inboxes with rich history. When a response exceeds ~25KB, save to file and delegate parsing to a subagent rather than reading inline.',
         inputSchema: {
           type: 'object' as const,
           properties: {
